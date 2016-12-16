@@ -24,6 +24,7 @@
         ]).
 
 -export_type([vector/0]).
+-export([format/1]).
 
 -include("e3d.hrl").
 
@@ -354,6 +355,11 @@ degrees(V0, V1) ->
             true -> RawCos
           end,
     math:acos(Cos) * (180.0 / math:pi()).
+
+
+-spec format(point()) -> io_lib:chars().
+format({A,B,C}) ->
+    io_lib:format("{~.3f,~.3f,~.3f}",[A,B,C]).
 
 %%%
 %%% Internal functions.
