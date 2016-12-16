@@ -24,7 +24,15 @@
 
 -type e3d_transform() :: #e3d_transf{}.
 
-  
+
+-record(ray,
+	{o::e3d_vec:point(),
+         d::e3d_vec:vector(),
+	 n::float(),                            % Near, far (or MinT MaxT)
+         f::float()}).
+
+-type e3d_ray() :: #ray{}.
+
 -record(e3d_face,
 	{vs=[],				        %List of vertex indices.
 	 vc=[],					%Vertex color indices.
@@ -59,5 +67,3 @@
 	 creator="", 				%Creator string.
 	 dir					%Directory for file.
 	}).
-
-
