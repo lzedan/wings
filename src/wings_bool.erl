@@ -116,9 +116,9 @@ merge_2(#{res:=cont,we1:=We11, el1:=Es1, fs1:=Fs1, op1:=Op1, op2:=Op2,
 merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2, op1:=Op1, op2:=Op2},
         #we{id=Id1}, #we{id=Id2}) ->
     ?dbg("~p ~p ~p done~n",[?FUNCTION_NAME, We1#we.id, We2#we.id]),
-    ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
-    ?dbg("~w ~n",[Es2]),
-    ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
+    %% ?dbg("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(Es1, We1))]),
+    %% ?dbg("~w ~n",[Es2]),
+    %% ?dbg("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(Es2, We2))]),
     DRes1 = dissolve_faces_in_edgeloops(Es1, Op1, We1),
     DRes2 = dissolve_faces_in_edgeloops(Es2, Op2, We2),
     Weld = fun() ->
@@ -138,33 +138,19 @@ sort_largest(Loops) ->
 
 remake_bvh(Fs0, We0, We1) ->
     Fs1 = gb_sets:union(Fs0,wings_we:new_items_as_gbset(face,We0,We1)),
-    ?dbg("Tess ~w ~n", [gb_sets:to_list(Fs1)]),
+%    ?dbg("Tess ~w ~n", [gb_sets:to_list(Fs1)]),
     We = wings_tesselation:quadrangulate(Fs1, We1),
     Fs = gb_sets:union(Fs1,wings_we:new_items_as_gbset(face,We1,We)),
     {Vmap, Bvh} = make_bvh(gb_sets:to_list(Fs), We),
     {We, Vmap, Bvh}.
 
-%% Coplanar faces are often caused by bad triangulations of > 4-polygons
-%% tesselate the problematic faces (if they are > 4-gons)
-tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1}, #{we:=We2,op:=Op2}) ->
-    Count = fun({Id,Face}) ->
-                    case Id =:= Id1 of
-                        true -> wings_face:vertices(Face, We1);
-                        false -> wings_face:vertices(Face, We2)
-                    end
-            end,
-    Tess0 = lists:foldl(fun({MF1,MF2}, Acc) ->
-                                C1 = Count(MF1),
-                                C2 = Count(MF2),
-                                case {C1 > 4, C2 > 4} of
-                                    {true, true} -> [MF1,MF2|Acc];
-                                    {true,false} -> [MF1|Acc];
-                                    {false,true} -> [MF2|Acc];
-                                   _  -> error(coplanar)
-                                end
-                        end, [], Coplanar),
-    Tess = sofs:to_external(sofs:relation_to_family(sofs:relation(Tess0))),
-    {We10, We20} = tesselate(Tess, We1, We2),
+%% Coplanar faces are often caused by bad triangulations
+tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
+                      #{we:=#we{id=Id2}=We2,op:=Op2}) ->
+    {L1,L2} = lists:unzip(Coplanar),
+    Tess = sofs:to_external(sofs:relation_to_family(sofs:relation(L1++L2))),
+    We10 = tesselate_faces(proplists:get_value(Id1,Tess), We1),
+    We20 = tesselate_faces(proplists:get_value(Id2,Tess), We2),
     {Vmap1, B1} = make_bvh(We10),
     {Vmap2, B2} = make_bvh(We20),
     EI0 = e3d_bvh:intersect(B1, B2),
@@ -172,15 +158,6 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1}, #{we:=We2,op:=O
     I21 = #{we=>We20,map=>Vmap2,es=>[],op=>Op2},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     merge_1(EI,I11,I21). %% We should crash if we have coplanar faces in this step
-
-tesselate([{Id, Fs}|Rest], #we{id=Id}=We1, We2) ->
-    We = wings_tesselation:quadrangulate(Fs, We1),
-    tesselate(Rest, We, We2);
-tesselate([{Id, Fs}|Rest], We1, #we{id=Id}=We2) ->
-    We = wings_tesselation:quadrangulate(Fs, We2),
-    tesselate(Rest, We1, We);
-tesselate([], We1, We2) ->
-    {We1,We2}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(Es, Op, #we{fs=Ftab} = We0) ->
@@ -201,7 +178,7 @@ faces_in_region(ELs, #we{fs=All}=We) ->
     Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
     Fs0 = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
     Fs  = gb_sets:intersection(gb_sets:from_ordset(gb_trees:keys(All)), Fs0),
-    ?dbg("~p~n",[gb_sets:to_list(Fs)]),
+    %% ?dbg("~p~n",[gb_sets:to_list(Fs)]),
     case gb_sets:is_empty(Fs) of
         true -> wings_edge:select_region(Es, We);
         false -> wings_edge:reachable_faces(Fs, Es, We)
@@ -366,16 +343,16 @@ make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL0, IFs, We0) ->
             %%       maps:get(v,V2), array:get(maps:get(v,V2), Vmap)]),
             {{We1, Edge}, Face} = connect_verts(V1,V2,FSs,Vmap,We0),
             ok = wings_we_util:validate(We1),
-            ?dbg("~w: new edge ~w face ~w~n",[We0#we.id, Edge, Face]),
+%            ?dbg("~w: new edge ~w face ~w~n",[We0#we.id, Edge, Face]),
             {EL1,Vmap1,We} = make_face_vs(FSs, V1, Edge, Vmap, We1),
             %% ?dbg("New: ~w~n",[EL1]),
             %% ?dbg("Old: ~w~n",[EL0]),
             make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, inside(Face,IFs), We);
-        [{Edge,F1,F2}] ->
-            ?dbg("Recreate: ~w: ~w ~w edge ~p in Fs ~w ~w~n",
-                 [We0#we.id, array:get(maps:get(v,V1),Vmap),array:get(maps:get(v,V2), Vmap),Edge,F1,F2]),
+        [{Edge,_F1,_F2}] ->
+            %% ?dbg("Recreate: ~w: ~w ~w edge ~p in Fs ~w ~w~n",
+            %%      [We0#we.id, array:get(maps:get(v,V1),Vmap),array:get(maps:get(v,V2), Vmap),Edge,_F1,_F2]),
             {EL1,Face,Vmap1,We} = half_inset_face(V1,V2,FSs,Edge,Vmap,We0),
-            ?dbg("~w: new face ~w~n",[We0#we.id, Face]),
+%            ?dbg("~w: new face ~w~n",[We0#we.id, Face]),
             make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, inside(Face,IFs), We)
     end.
 
@@ -954,4 +931,21 @@ renumber_and_add_vs([Pos|Ps], [], Index, Vtab0, Acc) ->
     renumber_and_add_vs(Ps, [], Index+1, Vtab, [Index|Acc]);
 renumber_and_add_vs([], [], _, Vtab, Vs) ->
     {Vtab, list_to_tuple(lists:reverse(Vs))}.
+
+tesselate_faces(Fs, We0) ->
+    Pick = fun(Face, {Tris, Other}) ->
+                   case wings_face:vertices(Face,We0) of
+                       3 -> {[Face|Tris],Other};
+                       _ -> {Tris, [Face|Other]}
+                   end
+           end,
+    {Tris,Ngons} = lists:foldl(Pick, {[],[]}, Fs),
+    {We1,_} = wings_face_cmd:subdiv(Tris, We0),
+    TessN = fun(Face, We00) ->
+                    %% Ugly workaround for inset vertex in face
+                    We01 = wings_extrude_face:faces([Face], We00),
+                    {We02,_} = wings_collapse:collapse_faces(gb_sets:singleton(Face),We01),
+                    We02
+            end,
+    lists:foldl(TessN, We1, Ngons).
 
