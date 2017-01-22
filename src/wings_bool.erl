@@ -127,8 +127,8 @@ merge_2(#{res:=done, we1:=We1, el1:=Es1, we2:=We2, el2:=Es2, op1:=Op1, op2:=Op2}
                    ok = wings_we_util:validate(We),
                    #{es=>Es, we=>We, delete=>Del}
            end,
-    %?DBG_TRY(Weld(), #{we=>element(2, DRes1),delete=>none, es=>[], error=>element(2, DRes2)}).
-    ?DBG_TRY(Weld(), #{we=>We1,delete=>none, es=>[], error=>We2}).
+    ?DBG_TRY(Weld(), #{we=>element(2, DRes1),delete=>none, es=>[], error=>element(2, DRes2)}).
+    %?DBG_TRY(Weld(), #{we=>We1,delete=>none, es=>[], error=>We2}).
 
 sort_largest(Loops) ->
     OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
@@ -160,8 +160,8 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
     merge_1(EI,I11,I21). %% We should crash if we have coplanar faces in this step
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-dissolve_faces_in_edgeloops(Es, Op, #we{fs=Ftab} = We0) ->
-    Fs0 = faces_in_region(Es, We0),
+dissolve_faces_in_edgeloops(ELs, Op, #we{fs=Ftab} = We0) ->
+    Fs0 = faces_in_region(ELs, We0),
     We = case Op of
              add -> wings_dissolve:faces(Fs0, We0);
              isect ->
@@ -169,7 +169,16 @@ dissolve_faces_in_edgeloops(Es, Op, #we{fs=Ftab} = We0) ->
                  wings_dissolve:faces(Fs, We0)
          end,
     Faces = wings_we:new_items_as_ordset(face, We0, We),
-    {order_loops(Faces, We),We}.
+    {order_loops(Faces, ELs, We),We}.
+
+order_loops([_]=Face, _ELs, _We) ->
+    Face;
+order_loops(Fs, ELs0, We) ->
+    {OrderEs,_} = lists:mapfoldl(fun(Edge, N) -> {{Edge,N},N+1} end,
+                                 0, [hd(lists:sort(EL)) || {EL,_} <- ELs0]),
+    CFs0 = [{hd(lists:sort(wings_face:to_edges([Face],We))), Face} || Face <- Fs],
+    CFs = [{proplists:get_value(Edge, OrderEs), Face} || {Edge, Face} <- CFs0],
+    [Face || {_, Face} <- lists:sort(CFs)].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% wings_edge:select_region() does not work as I want with several loops
@@ -204,9 +213,9 @@ do_weld(Fa, Fb, {We0, Acc}) ->
     [Va|_] = wings_face:vertices_ccw(Fa, We0),
     Pos = wings_vertex:pos(Va, We0),
     Find = fun(Vb, _, _, Vs) ->
-                   case wings_vertex:pos(Vb, We0) of
-                       Pos -> [Vb|Vs];
-                       _ -> Vs
+                   case e3d_vec:dist_sqr(wings_vertex:pos(Vb, We0), Pos) < ?EPSILON of
+                       true -> [Vb|Vs];
+                       false -> Vs
                    end
            end,
     [Vb] = wings_face:fold(Find, [], Fb, We0),
@@ -217,12 +226,6 @@ do_weld(Fa, Fb, {We0, Acc}) ->
     %% Find selection
     BorderEdges = wings_face:to_edges([Fa,Fb], We0),
     {We, BorderEdges ++ Acc}.
-
-order_loops([_]=Face, _We) ->
-    Face;
-order_loops(Fs, We) ->
-    CFs = [{wings_face:center(Face,We), Face} || Face <- Fs],
-    [Face || {_, Face} <- lists:sort(CFs)].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 make_verts(Loops, Vmap, We10, We20) ->
@@ -270,7 +273,7 @@ check_if_used(Loop, Fs) ->
     end.
 
 make_verts_per_we(Loop, Vmap0, We0) ->
-    ?dbg("We ~w Make verts:~n",[We0#we.id]),[io:format(" ~w~n", [E]) || E <- Loop],
+    % ?dbg("We ~w Make verts:~n",[We0#we.id]),[io:format(" ~w~n", [E]) || E <- Loop],
     {Vmap, We1} = cut_edges(Loop, Vmap0, We0),
     make_edge_loop(Loop, Vmap, [], [], We1).
 
@@ -399,17 +402,16 @@ pick_face(#{v:=V1,o_n:=N1}, #{v:=V2,o_n:=N2}, [], Vmap, We) ->
     end;
 pick_face(#{v:=V1,fs:=_Fs}=R0, #{v:=V2}=R1, Refs, Vmap, #we{es=_Etab, vp=_Vtab}=We) ->
     N = e3d_vec:norm(e3d_vec:average([N || #{o_n:=N} <- [R0,R1|Refs]])),
-    Wanted = pick_ref_face(Refs, undefined),
     WeV1 = array:get(V1, Vmap),
     WeV2 = array:get(V2, Vmap),
     All = wings_vertex:per_face([WeV1,WeV2],We),
-    ?dbg("~p in ~w => ~w ~n",[Wanted,_Fs, [Face || {Face, [_,_]} <- All]]),
+    % ?dbg("~p in ~w => ~w ~n",[pick_ref_face(Refs, undefined),_Fs, [Face || {Face, [_,_]} <- All]]),
     case [Face || {Face, [_,_]} <- All] of
         [Face] -> {WeV1,WeV2,Face,N}
     end.
 
 pick_face_2(Wanted, Fs, Edge, #we{id=_Id,es=Etab}) ->
-    ?dbg("id:~p Wanted ~w ~w Fs: ~p~n", [_Id, Wanted, Fs, array:get(Edge, Etab)]),
+    % ?dbg("id:~p Wanted ~w ~w Fs: ~p~n", [_Id, Wanted, Fs, array:get(Edge, Etab)]),
     #edge{lf=LF, rf=RF} = array:get(Edge, Etab),
     case Fs of
         {Wanted,_} -> LF;
@@ -427,7 +429,7 @@ half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], 
     E2 = array:get(EV2, Vmap0),
     Wanted = pick_ref_face([R2|FSs], undefined),
     Face = pick_face_2(Wanted, CFs, RefEdge, We0),
-    ?dbg("Half inset: ~p(~p) ~p(~p) in ~p~n",[EV1,E1,EV2,E2,Face]),
+    % ?dbg("Half inset: ~p(~p) ~p(~p) in ~p~n",[EV1,E1,EV2,E2,Face]),
     FVs0 = wings_face:vertices_ccw(Face, We0),
     FVs = order_vertex_list(E1, E2, FVs0),
     [E1,_Skip,E3|_FVs] = FVs,
