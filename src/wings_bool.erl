@@ -12,7 +12,7 @@
 %%
 
 -module(wings_bool).
--export([add/1,isect/1]).
+-export([add/1,isect/1,sub/1]).
 -include("wings.hrl").
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
@@ -40,9 +40,48 @@ isect(St0) ->
     Map = fun(_, We) -> init_isect(We, isect) end,
     do_bool(St0, Map).
 
-do_bool(#st{shapes=Sh0}=St0, Map) ->
-    Reduce = fun find_intersect/2,
+do_bool(St0, Map) ->
+    Reduce = fun(Bvh, Acc) -> find_intersect(Bvh, add, Acc) end,
     {_, Merged} = wings_sel:dfold(Map, Reduce, {[], []}, St0),
+    finish(Merged, St0).
+
+sub(#st{sel=OrigSel0}=St0) ->
+    Do = fun(Subtract, St1) ->
+                 St = ?SLOW(wings_sel:valid_sel(sub(Subtract, St1))),
+                 {save_state, wings_obj:recreate_folder_system(St)}
+         end,
+    OrigSel = gb_sets:from_list([Id || {Id, _} <- OrigSel0]),
+    wings:ask(sub_ask(OrigSel), St0, Do).
+
+sub(Subtract, St0) ->
+    Map = fun(_, We) -> init_isect(We, add) end,
+    Reduce = fun(Bvh, Acc) -> find_intersect(Bvh, sub, Acc) end,
+    {Subs, Merged} = wings_sel:dfold(Map, Reduce, {Subtract, []}, St0),
+    case Subs of
+        Subtract -> St0;
+        _ -> repeat(Subs, Merged, Map, Reduce, St0)
+    end.
+
+repeat(Bvhs, [], _, _, St) ->
+    finish(Bvhs, St);
+repeat([], Merged, _, _, St) ->
+    finish(Merged, St);
+repeat(Bvhs0, Merged0, Map, Reduce, #st{shapes=Sh0}=St) ->
+    Redo = fun(#{we:=We, sel_es:=Es0}, Acc) ->
+                   Reduce(Map(dummy, We#we{temp=Es0}),Acc)
+           end,
+    {Bvhs, Merged} = lists:foldl(Redo, {Bvhs0, []}, Merged0),
+    Sh = lists:foldl(fun(#{delete:=Del}, Sh) ->
+                             gb_trees:delete_any(Del, Sh)
+                     end, Sh0, Merged0),
+    case Bvhs0 =:= Bvhs of
+        true ->
+            finish(Bvhs++Merged, St);
+        false ->
+            repeat(Bvhs, Merged, Map, Reduce, St#st{shapes=Sh})
+    end.
+
+finish(Merged, #st{shapes=Sh0}=St0) ->
     %% This could be done in Reduce but would need St in Acc is that ok?
     Upd = fun(#{we:=#we{id=Id}=We, delete:=Del}=MI, Sh) ->
 		  Sh1 = gb_trees:update(Id, We, gb_trees:delete_any(Del, Sh)),
@@ -56,21 +95,57 @@ do_bool(#st{shapes=Sh0}=St0, Map) ->
     Sel = [{Id,gb_sets:from_list(Es)} || #{we:=#we{id=Id}, es:=Es} <- Merged],
     wings_sel:set(edge, Sel, St0#st{shapes=Sh}).
 
+sub_ask(OrigSel) ->
+    Desc  = ?__(1,"Pick bodies to subtract from original selection"),
+    Desc1 = ?__(2,"Nothing selected."),
+    Desc2 = ?__(3,"You must select one body that is not original selection."),
+    Fun = fun(check, #st{sel=[]}) ->
+		  {none, Desc1};
+             (check, #st{sel=Sel0}) ->
+                  Sel = [Id || {Id, _} <- Sel0],
+                  case sub_is_valid_sel(Sel, OrigSel) of
+                      false -> {none,Desc2};
+                      true -> {none,[]}
+		  end;
+             (exit, {_,_,#st{sel=Sel0}=St0}) ->
+                  Sel = [Id || {Id, _} <- Sel0],
+                  case sub_is_valid_sel(Sel, OrigSel) of
+                      false -> error;
+                      true ->
+                          Map = fun(_, We) -> init_isect(We, sub) end,
+                          Reduce = fun(D,Acc) -> [D|Acc] end,
+                          Sub = wings_sel:dfold(Map, Reduce, [], St0),
+                          {result, Sub}
+                  end
+	  end,
+    {[{Fun,Desc}],[],[],[body]}.
+
+sub_is_valid_sel([], _OrigSel) ->
+    false;
+sub_is_valid_sel(Sel, OrigSel) ->
+    Set = gb_sets:from_list(Sel),
+    case gb_sets:is_empty(gb_sets:intersection(Set, OrigSel)) of
+        true -> true;
+        false -> false
+    end.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-find_intersect(Bvh, {Bvhs0, Merged}) ->
-    case find_intersect(Bvh, Bvhs0, []) of
+find_intersect(Bvh, Op, {Bvhs0, Merged}) ->
+    case find_intersect_1(Bvh, Bvhs0, []) of
+        none when Op =:= sub -> {Bvhs0, Merged};
         none -> {[Bvh|Bvhs0], Merged};
         {We, Bvhs} -> {Bvhs, [We|Merged]}
     end.
 
-find_intersect(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest], Tested) ->
+find_intersect_1(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest], Tested) ->
     case e3d_bvh:intersect(B1, B2) of
-	[] ->  find_intersect(Head,Rest,[H1|Tested]);
+	[] ->  find_intersect_1(Head,Rest,[H1|Tested]);
 	EdgeInfo -> {merge_0(EdgeInfo, Head, H1), Rest ++ Tested}
     end;
-find_intersect(_Head, [], _) ->
+find_intersect_1(_Head, [], _) ->
     none.
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -166,7 +241,11 @@ dissolve_faces_in_edgeloops(ELs, Op, #we{fs=Ftab} = We0) ->
              add -> wings_dissolve:faces(Fs0, We0);
              isect ->
                  Fs = gb_sets:difference(gb_sets:from_ordset(gb_trees:keys(Ftab)), Fs0),
-                 wings_dissolve:faces(Fs, We0)
+                 wings_dissolve:faces(Fs, We0);
+             sub ->
+                 Fs = gb_sets:difference(gb_sets:from_ordset(gb_trees:keys(Ftab)), Fs0),
+                 We1 = wings_dissolve:faces(Fs, We0),
+                 wings_we:invert_normals(We1)
          end,
     Faces = wings_we:new_items_as_ordset(face, We0, We),
     {order_loops(Faces, ELs, We),We}.
