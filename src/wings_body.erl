@@ -229,14 +229,12 @@ command({vertex_attributes,remove_all_attributes}, St) ->
     {save_state,va_remove(all, St)};
 command({bool,add}, St0) ->
     St1 = ?SLOW(wings_sel:valid_sel(wings_bool:add(St0))),
-    {save_state, wings_shape:recreate_folder_system(St1)};
+    {save_state, wings_obj:recreate_folder_system(St1)};
 command({bool,isect}, St0) ->
     St1 = ?SLOW(wings_sel:valid_sel(wings_bool:isect(St0))),
-    {save_state, wings_shape:recreate_folder_system(St1)};
+    {save_state, wings_obj:recreate_folder_system(St1)};
 command({bool,sub}, St0) ->
-    St1 = ?SLOW(wings_sel:valid_sel(wings_bool:sub(St0))),
-    {save_state, wings_shape:recreate_folder_system(St1)};
-
+    wings_bool:sub(St0);
 command({weld,Ask}, St) ->
     ?SLOW(weld(Ask, St));
 command(vertex_color, St) ->
