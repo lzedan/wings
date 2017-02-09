@@ -68,7 +68,7 @@ repeat([], Merged, _, _, St) ->
     finish(Merged, St);
 repeat(Bvhs0, Merged0, Map, Reduce, #st{shapes=Sh0}=St) ->
     Redo = fun(#{we:=We, sel_es:=Es0}, Acc) ->
-                   Reduce(Map(dummy, We#we{temp=Es0}),Acc)
+                   Reduce(Map(gb_sets:empty(), We#we{temp=Es0}),Acc)
            end,
     {Bvhs, Merged} = lists:foldl(Redo, {Bvhs0, []}, Merged0),
     Sh = lists:foldl(fun(#{delete:=Del}, Sh) ->
