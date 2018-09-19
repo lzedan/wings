@@ -29,7 +29,7 @@
 	 get_lmem_sz/2
 	]).
 
--record(cli, {context, kernels=#{}, q, cl, device}).
+-record(cli, {context, kernels=#{}, q, cl, device, opt_image=true}).
 -record(kernel, {name, id, wg}).
 
 is_available() ->
@@ -61,7 +61,15 @@ setup() ->
               [Use, proplists:get_value(name,PI), proplists:get_value(version,PI)]),
     [Device|_] = CL#cl.devices,
     {ok,Queue} = cl:create_queue(CL#cl.context,Device,[]),
-    #cli{context=CL#cl.context, q=Queue, device=Device, cl=CL}.
+    IntelCpu = case Use =:= cpu andalso proplists:get_value(vendor,PI) of
+                   "Intel" ++ _ -> true;
+                   _ -> false
+               end,
+    Opt = case IntelCpu andalso cl:get_device_info(Device, version) of
+              {ok, "OpenCL 2.1" ++ _} -> false;
+              _ -> true
+          end,
+    #cli{context=CL#cl.context, q=Queue, device=Device, cl=CL, opt_image=Opt}.
 
 stop(#cli{cl=CL}) ->
     clu:teardown(CL).
@@ -78,6 +86,11 @@ compile(File = [A|_], Defs, CLI) when is_integer(A) ->
 compile(Files, Defs, CLI) ->
     compile_1(Files, Defs, CLI).
 
+%% crashes on Intel for some reason (disable)
+is_kernel(mm_normalmap,  #cli{opt_image=false}) ->
+    false;
+is_kernel(height2normal, #cli{opt_image=false}) ->
+    false;
 is_kernel(Kernel, #cli{kernels=Ks}) ->
     maps:is_key(Kernel, Ks);
 is_kernel(_, _) ->
@@ -85,7 +98,7 @@ is_kernel(_, _) ->
 
 compile_1(Files, Defs, CLI = #cli{cl=CL, device=Device, kernels=Kernels0}) ->
     Dir = filename:join(code:lib_dir(wings),"shaders"),
-    Bins = lists:map(fun(File) ->
+    SrcBins = lists:map(fun(File) ->
 			     AbsFile = filename:join([Dir, File]),
 			     case file:read_file(AbsFile) of
 				 {ok, Bin} -> {AbsFile, Bin};
@@ -93,7 +106,7 @@ compile_1(Files, Defs, CLI = #cli{cl=CL, device=Device, kernels=Kernels0}) ->
 				     error({error,{Reason,AbsFile}})
 			     end
 		     end, Files),
-    {ok, Program} = build_source(CL, Bins, Defs),
+    {ok, Program} = build_source(CL, SrcBins, Defs),
     {ok, MaxWGS} = cl:get_device_info(Device, max_work_group_size),
     {ok, KernelsIds} = cl:create_kernels_in_program(Program),
     Kernels = [kernel_info(K,Device, MaxWGS) || K <- KernelsIds],
@@ -101,8 +114,10 @@ compile_1(Files, Defs, CLI = #cli{cl=CL, device=Device, kernels=Kernels0}) ->
     CLI#cli{kernels=maps:merge(Kernels0, maps:from_list(Kernels))}.
 
 build_source(E, Sources, Defines) ->
-    Source = [Bin || {_, Bin} <- Sources],
-    {ok,Program} = cl:create_program_with_source(E#cl.context,Source),
+    {Files, SourceBin} = lists:unzip(Sources),
+    {ok,Program} = cl:create_program_with_source(E#cl.context,SourceBin),
+    %% Debug (on Intel cpu) with
+    %% case cl:build_program(Program, E#cl.devices, "-g -s " ++ hd(Files) ++ " " ++ Defines) of
     case cl:build_program(Program, E#cl.devices, Defines) of
 	ok ->
 	    Status = [{Dev, cl:get_program_build_info(Program, Dev, status)}
@@ -114,16 +129,15 @@ build_source(E, Sources, Defines) ->
 		    {ok,Program};
 		Errs ->
 		    ErrDevs = [Dev || {Dev, _} <- Errs],
-		    display_error(?LINE, Program, Sources, Defines, ErrDevs)
+		    display_error(?LINE, Program, Files, Defines, ErrDevs)
 	    end;
 	_Error ->
-	    display_error(?LINE, Program, Sources, Defines, E#cl.devices)
+	    display_error(?LINE, Program, Files, Defines, E#cl.devices)
     end.
 
-display_error(Line, Program, Sources, _Defines, DeviceList) ->
-    SFs = [S || {S,_} <- Sources],
+display_error(Line, Program, Files, _Defines, DeviceList) ->
     io:format("~n~p:~p: Error in source file(s):~n",[?MODULE, Line]),
-    [io:format(" ~s~n",[Source]) || Source <- SFs],
+    [io:format(" ~s~n",[Source]) || Source <- Files],
     lists:map(fun(Device) ->
 		      {ok, DevName} = cl:get_device_info(Device, name),
 		      io:format("Device: ~s~n",[DevName]),
@@ -149,8 +163,14 @@ display_error(Line, Program, Sources, _Defines, DeviceList) ->
     exit({error, build_program_failure}).
 
 kernel_info(K,Device,MaxWGS) ->
-    {ok, WG} = cl:get_kernel_workgroup_info(K, Device, work_group_size),
-    {ok, CWG} = cl:get_kernel_workgroup_info(K, Device, compile_work_group_size),
+    WG = case cl:get_kernel_workgroup_info(K, Device, work_group_size) of
+             {error, _} -> MaxWGS div 2;
+             {ok, Val0} -> Val0
+         end,
+    CWG = case cl:get_kernel_workgroup_info(K, Device, compile_work_group_size) of
+              {error, _} -> [0,0,0];
+              {ok, Val1} -> Val1
+          end,
     {ok, Name0} = cl:get_kernel_info(K, function_name),
     Name = list_to_atom(Name0),
     %% io:format("~s WG sizes ~p ~p~n", [Name, WG, WG1]),
