@@ -47,7 +47,7 @@ is_available() ->
 %% setup() -> cli().
 setup() ->
     Prefered = wings_pref:get_value(cl_type, gpu),
-    Other = [gpu,cpu] -- [Prefered],
+    [Other|_] = [gpu,cpu] -- [Prefered],
     {Use,CL} = case clu:setup(Prefered) of
                    {error, _} ->
                        case clu:setup(Other) of
