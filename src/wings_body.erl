@@ -61,6 +61,7 @@ menu(X, Y, St) ->
 	    {?__(18,"Separate"),separate,
 	     ?__(19,"Separate a combined objects into its components")},
 	    separator,
+	    {?__(200, "Boolean Add"), {bool, add}, ?__(201, "Merge objects intersecting")},
 	    {?__(20,"Weld"),weld,
 	     ?__(21,"Merge pair of faces that are nearly coincident"),
 	     [option]},
@@ -223,6 +224,9 @@ command({vertex_attributes,remove_uv_coordinates}, St) ->
     {save_state,va_remove(uv, St)};
 command({vertex_attributes,remove_all_attributes}, St) ->
     {save_state,va_remove(all, St)};
+command({bool,add}, St0) ->
+    St1 = ?SLOW(wings_sel:valid_sel(wings_bool:add(St0))),
+    {save_state, wings_shape:recreate_folder_system(St1)};
 command({weld,Ask}, St) ->
     ?SLOW(weld(Ask, St));
 command(vertex_color, St) ->

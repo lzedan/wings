@@ -42,6 +42,7 @@ MODULES= \
 	wings \
 	wings_align \
 	wings_body \
+	wings_bool \
 	wings_camera \
 	wings_cl \
 	wings_cc \
