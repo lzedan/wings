@@ -14,6 +14,7 @@
 -module(wings_bool).
 -export([add/1,isect/1,sub/1]).
 -include("wings.hrl").
+-include_lib("wings/e3d/e3d.hrl").
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
 
@@ -992,45 +993,35 @@ order(V2, V1) -> {V1,V2}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-triangles(Fs, We0) ->
-    {#we{vp=Vtab}, Ts} = lists:foldl(fun triangle/2, {We0,[]}, Fs),
+triangles(Fs, #we{vp=Vtab}=We) ->
+    Ts = lists:foldl(fun(Face, Acc) -> triangle(Face,We,Acc) end, [], Fs),
     {Vtab, array:from_list(Ts)}.
 
-triangle(Face, {We, Acc}) ->
+triangle(Face, We, Acc) ->
     Vs = wings_face:vertices_ccw(Face, We),
     case length(Vs) of
-	3 -> {We, [{list_to_tuple(Vs), Face}|Acc]};
+	3 -> [{list_to_tuple(Vs), Face}|Acc];
 	4 -> tri_quad(Vs, We, Face, Acc);
 	_ -> tri_poly(Vs, We, Face, Acc)
     end.
 
-tri_quad([Ai,Bi,Ci,Di] = Vs, #we{vp=Vtab}=We, Face, Acc) ->
+tri_quad([Ai,Bi,Ci,Di] = Vs, #we{vp=Vtab}, Face, Acc) ->
     [A,B,C,D] = VsPos = [array:get(V, Vtab) || V <- Vs],
     N = e3d_vec:normal(VsPos),
     case wings_tesselation:is_good_triangulation(N, A, B, C, D) of
-	true  -> {We, [{{Ai,Bi,Ci}, Face}, {{Ai,Ci,Di}, Face}|Acc]};
-	false -> {We, [{{Ai,Bi,Di}, Face}, {{Bi,Ci,Di}, Face}|Acc]}
+	true  -> [{{Ai,Bi,Ci}, Face}, {{Ai,Ci,Di}, Face}|Acc];
+	false -> [{{Ai,Bi,Di}, Face}, {{Bi,Ci,Di}, Face}|Acc]
     end.
 
-tri_poly(Vs, #we{vp=Vtab}=We, Face, Acc0) ->
+tri_poly(Vs, #we{vp=Vtab}, Face, Acc0) ->
     VsPos = [array:get(V, Vtab) || V <- Vs],
-    N = e3d_vec:normal(VsPos),
-    {Fs0, Ps0} = wings_gl:triangulate(N, VsPos),
-    Index = array:size(Vtab),
-    {TessVtab, Is} = renumber_and_add_vs(Ps0, Vs, Index, Vtab, []),
-    Fs = lists:foldl(fun({A,B,C}=_F, Acc) ->
-			     F = {element(A,Is), element(B, Is), element(C,Is)},
-			     [{F, Face}|Acc]
-		     end, Acc0, Fs0),
-    {We#we{vp=TessVtab}, Fs}.
-
-renumber_and_add_vs([_|Ps], [V|Vs], Index, Vtab, Acc) ->
-    renumber_and_add_vs(Ps, Vs, Index, Vtab, [V|Acc]);
-renumber_and_add_vs([Pos|Ps], [], Index, Vtab0, Acc) ->
-    Vtab = array:set(Index, Pos, Vtab0),
-    renumber_and_add_vs(Ps, [], Index+1, Vtab, [Index|Acc]);
-renumber_and_add_vs([], [], _, Vtab, Vs) ->
-    {Vtab, list_to_tuple(lists:reverse(Vs))}.
+    FaceVs = lists:seq(0, length(Vs)-1),
+    Tris = e3d_mesh:triangulate_face(#e3d_face{vs=FaceVs}, VsPos),
+    VsT = list_to_tuple(Vs),
+    Tri = fun(#e3d_face{vs=[A,B,C]}, Acc) ->
+                  [{{element(A+1,VsT), element(B+1,VsT), element(C+1,VsT)}, Face}|Acc]
+          end,
+    lists:foldl(Tri, Acc0, Tris).
 
 tesselate_faces(Fs, We0) ->
     Pick = fun(Face, {Tris, Other}) ->
