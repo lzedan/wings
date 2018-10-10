@@ -61,7 +61,7 @@ menu(X, Y, St) ->
 	    {?__(18,"Separate"),separate,
 	     ?__(19,"Separate a combined objects into its components")},
 	    separator,
-	    {?__(200, "Boolean"),
+	    {?__(200, "Boolean *TEST*"),
              {bool, [{?__(201,"Union"),     add, ?__(202, "Add parts from intersecting objects")},
                      {?__(203,"Intersect"), isect, ?__(204, "Make objects from the intersecting parts")},
                      {?__(205,"Difference"), sub, ?__(206, "Subtract objects from secondary selection")}]}},
