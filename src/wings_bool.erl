@@ -172,7 +172,9 @@ merge_0(EdgeInfo0, I1, I2) ->
     ?PUT(we1,maps:get(we,I1)), ?PUT(we2,maps:get(we,I2)),
     case [{MF1,MF2} || {coplanar, MF1, MF2} <- EdgeInfo] of
         [] -> ?DBG_TRY(merge_1(EdgeInfo, I1, I2), #{we=>get(we1),delete=>none, sel_es=>[], error=>get(we2)});
-        Coplanar -> tesselate_and_restart(Coplanar, I1, I2)
+        Coplanar ->
+            %% ?D("~p coplanar tesselate and restart ~w ~n",[?FUNCTION_NAME, Coplanar]),
+            tesselate_and_restart(Coplanar, I1, I2)
     end.
 
 merge_1(EdgeInfo0, #{we:=We10,el:=EL10,op:=Op1}, #{we:=We20,el:=EL20,op:=Op2}) ->
@@ -597,16 +599,45 @@ inset_face(Fs, Vmap, EL, We0) ->
     FVs = wings_face:vertices_ccw(Face, We1),
     FPos = wings_face:vertex_positions(Face, We1),
     NumberOfOld = length(FVs),
+
+    LoopPos = [{E, element(2,array:get(V,Vmap))} || E = #{v:=V} <- Fs],
+    %% ?D("Inside: ~p ~n",[keep_inside(LoopPos, Face, We0)]),
+    KeepFace = keep_inside(LoopPos, Face, We0),
     if
 	NumberOfOld =:= NumberOfNew ->
-            inset_face_equal(Face, FVs, FPos, Fs, Vmap, EL,We1);
+            VsPos = inset_face_equal(FVs, FPos, Fs, Vmap),
+            Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
+                               We1#we.vp, VsPos),
+            cleanup_edges(FVs, VsPos, Face, KeepFace, EL, Vmap, We1#we{vp=Vtab});
 	NumberOfOld > NumberOfNew ->
-            inset_face_less(Face, FVs, FPos, Fs, Vmap, EL,We1);
+            VsPos = inset_face_less(FVs, FPos, Fs, Vmap),
+            Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
+                               We1#we.vp, VsPos),
+            cleanup_edges(FVs, VsPos, Face, KeepFace, EL, Vmap, We1#we{vp=Vtab});
 	true ->
-            inset_face_more(Face, FVs, FPos, Fs, Vmap, EL,We1)
+            inset_face_more({KeepFace,Face}, FVs, FPos, Fs, Vmap, EL,We1)
     end.
 
-inset_face_equal(Face, FVs, [P1,P2|_] = FPos, [#{v:=V1},#{v:=V2}|_]=Fs, Vmap, EL, We) ->
+keep_inside(EL, Face, We) ->
+    Center = wings_face:center(Face,We),
+    VsPoint = e3d_kd3:from_list(EL),
+    %% The furtherest vertex should be convex,
+    %% and it's normal should point towards the center or away.
+    {#{o_n:=ON},Far} = find_furtherest(Center, VsPoint),
+    Vec = e3d_vec:norm_sub(Far,Center),
+    %% ?D("Dot:  ~w~n",[e3d_vec:dot(ON, Vec)]),
+    e3d_vec:dot(ON, Vec) >= 0.0.
+
+find_furtherest(Pos, Kd3) ->
+    find_far2(Pos, e3d_kd3:take_nearest(Pos, Kd3)).
+
+find_far2(Pos, {Best, Kd3}) ->
+    case e3d_kd3:take_nearest(Pos, Kd3) of
+        undefined -> Best;
+        Other -> find_far2(Pos, Other)
+    end.
+
+inset_face_equal(FVs, [P1,P2|_] = FPos, [#{v:=V1},#{v:=V2}|_]=Fs, Vmap) ->
     KD3 = e3d_kd3:from_list(lists:zip(FVs, FPos)),
     P3 = vmap_pos(V1, Vmap),
     P4 = vmap_pos(V2, Vmap),
@@ -621,21 +652,16 @@ inset_face_equal(Face, FVs, [P1,P2|_] = FPos, [#{v:=V1},#{v:=V2}|_]=Fs, Vmap, EL
     {VL1,VL2} = lists:splitwith(fun(V) when V =:= First -> false; (_) -> true end,
                                 Ordered),
     PosL = [vmap_pos(Vi, Vmap)|| #{v:=Vi} <- Fs],
-    Vs = lists:zip(VL2++VL1, PosL),
-    Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
-                       We#we.vp, Vs),
-    cleanup_edges(FVs, [V||{V,_}<-Vs], Face, EL, Vmap, We#we{vp=Vtab}).
+    lists:zip(VL2++VL1, PosL).
 
-inset_face_less(Face, FVs, FPos, Fs, Vmap, EL, We) ->
+inset_face_less(FVs, FPos, Fs, Vmap) ->
     KD3 = e3d_kd3:from_list(lists:zip(FVs, FPos)),
     {Vs,_} = lists:mapfoldl(fun(#{v:=Vi}, Tree0) ->
                                     Pos = vmap_pos(Vi, Vmap),
                                     {{V,_}, Tree} = e3d_kd3:take_nearest(Pos, Tree0),
                                     {{V,Pos},Tree}
                             end, KD3, Fs),
-    Vtab = lists:foldl(fun({V,Pos}, Vtab) -> array:set(V, Pos, Vtab) end,
-                       We#we.vp, Vs),
-    cleanup_edges(FVs, [V||{V,_}<-Vs], Face, EL, Vmap, We#we{vp=Vtab}).
+    Vs.
 
 inset_face_more(Face, FVs, FPos, Fs, Vmap, EL, We) ->
     KD3 = e3d_kd3:from_list([{FS, vmap_pos(Vi, Vmap)} || #{v:=Vi}=FS <- Fs]),
@@ -653,23 +679,33 @@ inset_face_more(Face, FVs, FPos, Fs, Vmap, EL, We) ->
                                end
                     end, Fs),
     {Fs2,Fs3} = lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Fs1),
-    inset_face_more(Fs3++Fs2++[hd(Fs3)], EL, Vmap1, We#we{vp=Vtab}, Face).
+    inset_face_more2(Fs3++Fs2++[hd(Fs3)], EL, Vmap1, We#we{vp=Vtab}, Face).
 
-inset_face_more([_], EL, Vmap, We, Face) -> {EL, [Face], Vmap, We};
-inset_face_more([SE|Rest], EL0, Vmap0, We0, Face) ->
+inset_face_more2([_], EL, Vmap, We, {KeepFace, Face}) ->
+    Fs = case KeepFace of
+             true -> [Face];
+             false -> []   %% Neighbor Faces ??
+         end,
+    {EL, Fs, Vmap, We};
+inset_face_more2([SE|Rest], EL0, Vmap0, We0, Face) ->
     case lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Rest) of
         {[], Fs1} ->
-            inset_face_more(Fs1, EL0, Vmap0, We0, Face);
+            inset_face_more2(Fs1, EL0, Vmap0, We0, Face);
         {Fs0,[Next|_]=Fs1} ->
             [{Edge,_,_}] = edge_exists(SE,Next,Vmap0,We0),
             {EL, Vmap, We} = make_face_vs(Fs0, SE, Edge, Vmap0, We0),
-            inset_face_more(Fs1, EL++EL0, Vmap, We,Face)
+            inset_face_more2(Fs1, EL++EL0, Vmap, We,Face)
     end.
 
-cleanup_edges(FVs, Used, Face, EL0, Vmap, We) ->
+cleanup_edges(FVs, Used0, Face, KeepFace, EL0, Vmap, We) ->
+    Used = [V||{V,_}<-Used0],
     %% Start with a used vertex
     {Vs1,Vs0} = lists:splitwith(fun(V) -> not lists:member(V, Used) end, FVs),
-    {EL,Fs,WeR} = cleanup_edges(Vs0++Vs1, false, hd(Vs0), [], Used, Face, EL0, We),
+    {EL,WeR} = cleanup_edges(Vs0++Vs1, false, hd(Vs0), [], Used, Face, EL0, We),
+    Fs = case KeepFace of
+             true -> [Face];
+             false -> []  %% Neighbor Faces ??
+         end,
     {EL,Fs,Vmap,WeR}.
 
 cleanup_edges([V1|[V2|Vs]=Vs0], Connect, Last, Drop, Used, Face, EL, We0) ->
@@ -695,7 +731,7 @@ cleanup_edges([V1], Connect, Last, Drop, _Used, Face, EL0, We0) ->
     Es = wings_edge:from_vs(Drop, We2),
     We3 = wings_edge:dissolve_edges(Es, We2),
     ok = wings_we_util:validate(We3),
-    {EL, [Face], We3}.
+    {EL, We3}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 filter_tri_edges({L1,L2}, We1,We2) ->
