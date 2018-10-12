@@ -20,6 +20,8 @@
 
 %-define(DEBUG,true).
 -ifdef(DEBUG).
+%% Lots of debug stuff in here, maybe it can tell a thing or two of
+%% the problems I have had with making this, sigh.
 -define(DBG_TRY(Do,Err),
         try Do
         catch error:__R ->
@@ -177,7 +179,7 @@ merge_0(EdgeInfo0, I1, I2) ->
             tesselate_and_restart(Coplanar, I1, I2)
     end.
 
-merge_1(EdgeInfo0, #{we:=We10,el:=EL10,op:=Op1}, #{we:=We20,el:=EL20,op:=Op2}) ->
+merge_1(EdgeInfo0, #{we:=We10,el:=EL10}=I10, #{we:=We20,el:=EL20}=I20) ->
     ?D("~p~n",[?FUNCTION_NAME]),
     {Vmap, EdgeInfo} = make_vmap(EdgeInfo0, We10, We20),  %% Make vertex id => pos and update edges
     %?D("Vmap: ~p~n",[array:to_orddict(Vmap)]),
@@ -188,32 +190,39 @@ merge_1(EdgeInfo0, #{we:=We10,el:=EL10,op:=Op1}, #{we:=We20,el:=EL20,op:=Op2}) -
     Loops1 = [filter_tri_edges(Loop,We10,We20) || Loop <- lists:zip(L10,L20)],
     Loops = sort_largest(Loops1),
     %% Create vertices on the edge-loops
-    #{el1:=EL11, el2:=EL21} = R0 = make_verts(Loops, Vmap, We10, We20),
-    merge_2(R0#{el1:=EL11++EL10, el2:=EL21++EL20, op1=>Op1, op2=>Op2},We10,We20).
+    {Res, I11, I21} = make_verts(Loops, Vmap, We10, We20),
+    merge_2(Res,
+            maps:merge(I10, maps:update_with(el,fun(EL) -> EL++EL10 end, I11)),
+            maps:merge(I20, maps:update_with(el,fun(EL) -> EL++EL20 end, I21)),
+            We10,We20).
 
 %% Continuing: multiple edge loops have hit the same face. It was
 %% really hard to handle that in one pass, since faces are split and
 %% moved.  Solved it by doing the intersection test again for the new
 %% faces and start over
-merge_2(#{res:=cont,we1:=We11, el1:=EL1, fs1:=Fs1, op1:=Op1, op2:=Op2,
-          we2:=We21, el2:=EL2, fs2:=Fs2},We10,We20) ->
+merge_2(cont, #{we:=We11, fs:=Fs1}=I10, #{we:=We21, fs:=Fs2}=I20,
+        We10,We20) ->
     ?D("~p cont~n",[?FUNCTION_NAME]),
     {We1, Vmap1, B1} = remake_bvh(Fs1, We10, We11),
     {We2, Vmap2, B2} = remake_bvh(Fs2, We20, We21),
     EI0 = e3d_bvh:intersect(B1, B2),
-    I11 = #{we=>We1,map=>Vmap1,el=>EL1, op=>Op1},
-    I21 = #{we=>We2,map=>Vmap2,el=>EL2, op=>Op2},
+    I11 = I10#{we=>We1,map=>Vmap1},
+    I21 = I20#{we=>We2,map=>Vmap2},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     %% We should crash if we have coplanar faces in this step
     ?DBG_TRY(merge_1(EI,I11,I21), #{we=>We1,delete=>none, el=>[], sel_es=>[], error=>We2});
+    %%#{we=>We1,delete=>none, el=>[], sel_es=>[], error=>We2};
+
 %% All edge loops are in place, dissolve faces inside edge loops and
 %% merge the two we's
-merge_2(#{res:=done, we1:=We1, el1:=EL1, we2:=We2, el2:=EL2, op1:=Op1, op2:=Op2},
+merge_2(done, #{we:=We1, el:=EL1, op:=Op1}, #{we:=We2, el:=EL2, op:=Op2},
         #we{id=Id1}, #we{id=Id2}) ->
-    ?D("~p ~p ~p done~n",[?FUNCTION_NAME, We1#we.id, We2#we.id]),
+    %% ?D("~p ~p ~p done~n",[?FUNCTION_NAME, We1#we.id, We2#we.id]),
+    %% ?D("~w ~n",[EL1]),
     %% ?D("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(EL1, We1))]),
     %% ?D("~w ~n",[EL2]),
     %% ?D("Dissolve: ~p: ~w~n",[Id2,gb_sets:to_list(faces_in_region(EL2, We2))]),
+
     DRes1 = dissolve_faces_in_edgeloops(EL1, Op1, We1),
     DRes2 = dissolve_faces_in_edgeloops(EL2, Op2, We2),
     Weld = fun() ->
@@ -223,7 +232,7 @@ merge_2(#{res:=done, we1:=We1, el1:=EL1, we2:=We2, el2:=EL2, op1:=Op1, op2:=Op2}
                    #{sel_es=>Es, we=>We, delete=>Del}
            end,
     ?DBG_TRY(Weld(), #{we=>element(2, DRes1),delete=>none, sel_es=>[], error=>element(2, DRes2)}).
-    %?DBG_TRY(Weld(), #{we=>We1,delete=>none, sel_es=>[], error=>We2}).
+    %% #{we=>We1,delete=>none, sel_es=>[], error=>We2, dummy=>{DRes1, DRes2, catch weld([])}}.
 
 sort_largest(Loops) ->
     OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
@@ -352,7 +361,7 @@ make_verts([], _, Fs10, We1, _, Fs20, We2, Acc, Cont) ->
     {Es1, Es2} = lists:unzip(Acc),
     case Cont of
 	[] ->
-	    #{res=>done, we1=>We1, el1=>Es1, we2=>We2, el2=>Es2};
+	    {done, #{we=>We1, el=>Es1}, #{we=>We2, el=>Es2}};
 	_ ->
 	    Add = fun({L1,L2}, {F1,F2}) ->
 			  {gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L1]),F1),
@@ -361,7 +370,7 @@ make_verts([], _, Fs10, We1, _, Fs20, We2, Acc, Cont) ->
 	    {Fs11,Fs21} = lists:foldl(Add, {Fs10,Fs20}, Cont),
             Fs1 = gb_sets:intersection(Fs11, gb_sets:from_ordset(gb_trees:keys(We1#we.fs))),
             Fs2 = gb_sets:intersection(Fs21, gb_sets:from_ordset(gb_trees:keys(We2#we.fs))),
-            #{res=>cont,we1=>We1, el1=>Es1, fs1=>Fs1, we2=>We2, el2=>Es2, fs2=>Fs2}
+            {cont, #{we=>We1, el=>Es1, fs=>Fs1}, #{we=>We2, el=>Es2, fs=>Fs2}}
     end.
 
 check_if_used(Loop, Fs) ->
