@@ -308,13 +308,17 @@ faces_in_region(ELs, #we{fs=All}=We) ->
 
 %% Weld
 %% Merge the two We's and bridge corresponding face-pairs
-weld({Fs01,#we{temp=Es01}=We01}, _OrigWe1, {Fs02, #we{temp=Es02}=We02}, _OrigWe2) ->
-    WeRs = [{We01,[{face, Fs01, unused},{edge, Es01, unused}]},
-            {We02,[{face, Fs02, unused},{edge, Es02, unused}]}],
+weld({Fs01,#we{temp=Es01}=We01}, OrigWe1, {Fs02, #we{temp=Es02}=We02}, OrigWe2) ->
+    TempEs1 = ordsets:subtract(wings_we:new_items_as_ordset(edge, OrigWe1, We01), Es01),
+    TempEs2 = ordsets:subtract(wings_we:new_items_as_ordset(edge, OrigWe2, We02), Es02),
+
+    WeRs = [{We01,[{face, Fs01, weld},{edge, Es01, border}, {edge, TempEs1, temp}]},
+            {We02,[{face, Fs02, weld},{edge, Es02, border}, {edge, TempEs2, temp}]}],
     {We0,Rs} = wings_we:merge_root_set(WeRs),
-    [Fs1,Fs2] = [Fs || {face,Fs,_} <- Rs],
+    [Fs1,Fs2] = [Fs || {face,Fs,weld} <- Rs],
     FacePairs = lists:zip(Fs1,Fs2),
-    SelEs = lists:append([Es || {edge,Es,_} <- Rs]),
+    SelEs = lists:append([Es || {edge,Es,border} <- Rs]),
+
     %?D("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
     Weld = fun({F1,F2}, WeAcc) -> do_weld(F1,F2,WeAcc) end,
     {#we{es=Etab} = We1, Es} = lists:foldl(Weld, {We0,[]}, FacePairs),
