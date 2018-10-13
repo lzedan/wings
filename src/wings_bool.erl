@@ -18,23 +18,23 @@
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
 
-%-define(DEBUG,true).
+-define(DEBUG,true).
 -ifdef(DEBUG).
 %% Lots of debug stuff in here, maybe it can tell a thing or two of
 %% the problems I have had with making this, sigh.
--define(DBG_TRY(Do,Err),
+-define(DBG_TRY(Do,We1,We2),
         try Do
         catch error:__R ->
                 ?dbg("ERROR: ~p:~n ~P~n", [__R, erlang:get_stacktrace(), 20]),
-                Err;
+                #{we=>We1,delete=>none, sel_es=>[], error=>We2};
               exit:_ ->
-                Err
+                #{we=>We1,delete=>none, sel_es=>[], error=>We2}
         end).
 -define(PUT(Id,We),put(Id,We)).
 -define(TEST, true).
 -define(D(F,A), ?dbg(F,A)).
 -else.
--define(DBG_TRY(Do,Err), Do).
+-define(DBG_TRY(Do,A,B), Do).
 -define(PUT(Id,We),ok).
 -define(TEST, false).
 -define(D(F,A), ok).
@@ -173,7 +173,8 @@ merge_0(EdgeInfo0, I1, I2) ->
     EdgeInfo = [remap(Edge, I1, I2) || Edge <- EdgeInfo0],
     ?PUT(we1,maps:get(we,I1)), ?PUT(we2,maps:get(we,I2)),
     case [{MF1,MF2} || {coplanar, MF1, MF2} <- EdgeInfo] of
-        [] -> ?DBG_TRY(merge_1(EdgeInfo, I1, I2), #{we=>get(we1),delete=>none, sel_es=>[], error=>get(we2)});
+        [] ->
+            ?DBG_TRY(merge_1(EdgeInfo, I1, I2), get(we1), get(we2));
         Coplanar ->
             %% ?D("~p coplanar tesselate and restart ~w ~n",[?FUNCTION_NAME, Coplanar]),
             tesselate_and_restart(Coplanar, I1, I2)
@@ -210,8 +211,7 @@ merge_2(cont, #{we:=We11, fs:=Fs1}=I10, #{we:=We21, fs:=Fs2}=I20,
     I21 = I20#{we=>We2,map=>Vmap2},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     %% We should crash if we have coplanar faces in this step
-    ?DBG_TRY(merge_1(EI,I11,I21), #{we=>We1,delete=>none, el=>[], sel_es=>[], error=>We2});
-    %%#{we=>We1,delete=>none, el=>[], sel_es=>[], error=>We2};
+    ?DBG_TRY(merge_1(EI,I11,I21), We1, We2);
 
 %% All edge loops are in place, dissolve faces inside edge loops and
 %% merge the two we's
@@ -231,7 +231,7 @@ merge_2(done, #{we:=We1, el:=EL1, op:=Op1}, #{we:=We2, el:=EL2, op:=Op2},
                    ok = wings_we_util:validate(We),
                    #{sel_es=>Es, we=>We, delete=>Del}
            end,
-    ?DBG_TRY(Weld(), #{we=>element(2, DRes1),delete=>none, sel_es=>[], error=>element(2, DRes2)}).
+    ?DBG_TRY(Weld(), element(2, DRes1), element(2, DRes2)).
     %% #{we=>We1,delete=>none, sel_es=>[], error=>We2, dummy=>{DRes1, DRes2, catch weld([])}}.
 
 sort_largest(Loops) ->
