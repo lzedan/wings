@@ -174,7 +174,12 @@ merge_0(EdgeInfo0, I1, I2) ->
     ?PUT(we1,maps:get(we,I1)), ?PUT(we2,maps:get(we,I2)),
     case [{MF1,MF2} || {coplanar, MF1, MF2} <- EdgeInfo] of
         [] ->
-            ?DBG_TRY(merge_1(EdgeInfo, I1, I2), get(we1), get(we2));
+            case ?DBG_TRY(merge_1(EdgeInfo, I1, I2), get(we1), get(we2)) of
+                {I1R,I2R} ->
+                    merge_complete(I1R, I2R, maps:get(we,I1), maps:get(we,I2));
+                Error ->
+                    Error
+            end;
         Coplanar ->
             %% ?D("~p coplanar tesselate and restart ~w ~n",[?FUNCTION_NAME, Coplanar]),
             tesselate_and_restart(Coplanar, I1, I2)
@@ -212,11 +217,12 @@ merge_2(cont, #{we:=We11, fs:=Fs1}=I10, #{we:=We21, fs:=Fs2}=I20,
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     %% We should crash if we have coplanar faces in this step
     ?DBG_TRY(merge_1(EI,I11,I21), We1, We2);
+merge_2(done, I1, I2, _, _) ->
+    {I1, I2}.
 
 %% All edge loops are in place, dissolve faces inside edge loops and
 %% merge the two we's
-merge_2(done, #{we:=We1, el:=EL1, op:=Op1}, #{we:=We2, el:=EL2, op:=Op2},
-        #we{id=Id1}, #we{id=Id2}) ->
+merge_complete(#{we:=We1, el:=EL1, op:=Op1}, #{we:=We2, el:=EL2, op:=Op2}, We10, We20) ->
     %% ?D("~p ~p ~p done~n",[?FUNCTION_NAME, We1#we.id, We2#we.id]),
     %% ?D("~w ~n",[EL1]),
     %% ?D("Dissolve: ~p: ~w~n",[Id1,gb_sets:to_list(faces_in_region(EL1, We1))]),
@@ -226,13 +232,12 @@ merge_2(done, #{we:=We1, el:=EL1, op:=Op1}, #{we:=We2, el:=EL2, op:=Op2},
     DRes1 = dissolve_faces_in_edgeloops(EL1, Op1, We1),
     DRes2 = dissolve_faces_in_edgeloops(EL2, Op2, We2),
     Weld = fun() ->
-                   {We,Es} = weld([DRes1, DRes2]),
-                   [Del] = lists:delete(We#we.id, [Id1,Id2]),
+                   {We,Es} = weld(DRes1, We10, DRes2, We20),
+                   [Del] = lists:delete(We#we.id, [We1#we.id,We2#we.id]),
                    ok = wings_we_util:validate(We),
                    #{sel_es=>Es, we=>We, delete=>Del}
            end,
     ?DBG_TRY(Weld(), element(2, DRes1), element(2, DRes2)).
-    %% #{we=>We1,delete=>none, sel_es=>[], error=>We2, dummy=>{DRes1, DRes2, catch weld([])}}.
 
 sort_largest(Loops) ->
     OnV = fun(#{e:=on_vertex}) -> true; (_) -> false end,
@@ -303,8 +308,9 @@ faces_in_region(ELs, #we{fs=All}=We) ->
 
 %% Weld
 %% Merge the two We's and bridge corresponding face-pairs
-weld(FsWes) ->
-    WeRs = [{We,[{face, Fs, unused},{edge, Es, unused}]} || {Fs,#we{temp=Es}=We} <- FsWes],
+weld({Fs01,#we{temp=Es01}=We01}, _OrigWe1, {Fs02, #we{temp=Es02}=We02}, _OrigWe2) ->
+    WeRs = [{We01,[{face, Fs01, unused},{edge, Es01, unused}]},
+            {We02,[{face, Fs02, unused},{edge, Es02, unused}]}],
     {We0,Rs} = wings_we:merge_root_set(WeRs),
     [Fs1,Fs2] = [Fs || {face,Fs,_} <- Rs],
     FacePairs = lists:zip(Fs1,Fs2),
