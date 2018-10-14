@@ -312,21 +312,26 @@ weld({Fs01,#we{temp=Es01}=We01}, OrigWe1, {Fs02, #we{temp=Es02}=We02}, OrigWe2) 
     TempEs1 = ordsets:subtract(wings_we:new_items_as_ordset(edge, OrigWe1, We01), Es01),
     TempEs2 = ordsets:subtract(wings_we:new_items_as_ordset(edge, OrigWe2, We02), Es02),
 
-    WeRs = [{We01,[{face, Fs01, weld},{edge, Es01, border}, {edge, TempEs1, temp}]},
-            {We02,[{face, Fs02, weld},{edge, Es02, border}, {edge, TempEs2, temp}]}],
+    WeRs = [{We01,[{face,Fs01,weld}, {edge,Es01,border}, {edge,TempEs1,temp}]},
+            {We02,[{face,Fs02,weld}, {edge,Es02,border}, {edge,TempEs2,temp}]}],
     {We0,Rs} = wings_we:merge_root_set(WeRs),
     [Fs1,Fs2] = [Fs || {face,Fs,weld} <- Rs],
     FacePairs = lists:zip(Fs1,Fs2),
     SelEs = lists:append([Es || {edge,Es,border} <- Rs]),
+    TempEs0 = lists:append([Es || {edge,Es,temp} <- Rs]),
+    TempEs = ordsets:subtract(ordsets:from_list(TempEs0),
+                              wings_face:to_edges(Fs1++Fs2, We0)),
 
     %?D("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
     Weld = fun({F1,F2}, WeAcc) -> do_weld(F1,F2,WeAcc) end,
-    {#we{es=Etab} = We1, Es} = lists:foldl(Weld, {We0,[]}, FacePairs),
+    {We1, Es} = lists:foldl(Weld, {We0,[]}, FacePairs),
+    #we{es=Etab} = We2 = cleanup_temp_edges(TempEs, We1),
+
     Borders = ordsets:intersection(ordsets:from_list(Es++SelEs),
                                    wings_util:array_keys(Etab)),
-    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We1)),
-    Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We1) > 5],
-    We = wings_tesselation:quadrangulate(Fs, We1),
+    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We2)),
+    Fs = [Face || Face <- BorderFs, wings_face:vertices(Face, We2) > 5],
+    We = wings_tesselation:quadrangulate(Fs, We2),
     {wings_facemat:gc(We), Borders}.
 
 do_weld(Fa, Fb, {We0, Acc}) ->
@@ -346,6 +351,17 @@ do_weld(Fa, Fb, {We0, Acc}) ->
     %% Find selection
     BorderEdges = wings_face:to_edges([Fa,Fb], We0),
     {We, BorderEdges ++ Acc}.
+
+cleanup_temp_edges(Es, We0) ->
+    ?D("Dissolve Es: ~w~n", [Es]),
+    Faces = gb_sets:to_list(wings_face:from_edges(Es, We0)),
+    {_We1,_Bad} = wings_edge:dissolve_edges(Es, Faces, We0),
+    ?D("Bad ~p~n",[_Bad]),
+    %% Vs = wings_edge:to_vertices(Es, We0),
+    %% wings_edge:dissolve_isolated_vs(Vs, We1).
+    We0.
+
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 make_verts(Loops, Vmap, We10, We20) ->
