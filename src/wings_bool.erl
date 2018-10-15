@@ -384,12 +384,9 @@ make_verts([{L1,L2}=L12|Ls], Vm10, Fs10, We10, Vm20, Fs20, We20, TEs10, TEs20, A
 	false ->
 	    {Es1, Fs11, TEs1, Vm1, We1} = make_verts_per_we(L1, TEs10, Vm10, We10),
 	    {Es2, Fs21, TEs2, Vm2, We2} = make_verts_per_we(L2, TEs20, Vm20, We20),
-            ?PUT(we1,We1),
-            ?PUT(we2,We2),
-	    Fs12 = gb_sets:union(gb_sets:from_list(Fs11), Fs10),
-            Fs1 = gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L1]), Fs12),
-	    Fs22 = gb_sets:union(gb_sets:from_list(Fs21), Fs20),
-            Fs2 = gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L2]), Fs22),
+            Fs1 = gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L1]), Fs10),
+            Fs2 = gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L2]), Fs20),
+            ?PUT(we1,We1), ?PUT(we2,We2),
             make_verts(Ls, Vm1, Fs1, We1, Vm2, Fs2, We2, TEs1,TEs2,
                        [{{Es1,Fs11},{Es2,Fs21}}|Acc], Cont)
     end;
