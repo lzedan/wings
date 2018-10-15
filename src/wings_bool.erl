@@ -91,7 +91,7 @@ repeat([], Merged, _, _, St) ->
     finish(Merged, St);
 repeat(Bvhs0, Merged0, Map, Reduce, #st{shapes=Sh0}=St) ->
     Redo = fun(#{we:=We, sel_es:=Es0}, Acc) ->
-                   Reduce(Map(gb_sets:empty(), We#we{temp=Es0}),Acc)
+                   Reduce(Map(gb_sets:empty(), We#we{temp={?MODULE,Es0}}),Acc)
            end,
     {Bvhs, Merged} = lists:foldl(Redo, {Bvhs0, []}, Merged0),
     Sh = lists:foldl(fun(#{delete:=Del}, Sh) ->
@@ -309,7 +309,7 @@ faces_in_region(ELs, #we{fs=All}=We) ->
 
 %% Weld
 %% Merge the two We's and bridge corresponding face-pairs
-weld({Fs01,#we{temp=Es01}=We01}, TEs01, {Fs02,#we{temp=Es02}=We02}, TEs02) ->
+weld({Fs01,#we{temp={?MODULE,Es01}}=We01}, TEs01, {Fs02,#we{temp={?MODULE, Es02}}=We02}, TEs02) ->
     TEs1 = ordsets:intersection(TEs01, wings_util:array_keys(We01#we.es)),
     TEs2 = ordsets:intersection(TEs02, wings_util:array_keys(We02#we.es)),
     WeRs = [{We01, [{face,Fs01,weld}, {edge,Es01,border}, {edge,TEs1,temp}]},
@@ -997,9 +997,11 @@ on_vertex(#{o:=Id, v:=V}=SF, Vmap) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init_isect(#we{id=Id, temp=Es}=We0, Op) ->
+init_isect(#we{id=Id, temp={?MODULE,Es}}=We0, Op) ->
     {Ts, Bvh} = make_bvh(We0),
-    #{id=>Id,map=>Ts,bvh=>Bvh,sel_es=>Es,el=>[],we=>We0, op=>Op, temp_es=>gb_sets:empty()}.
+    #{id=>Id,map=>Ts,bvh=>Bvh,sel_es=>Es,el=>[],we=>We0, op=>Op, temp_es=>gb_sets:empty()};
+init_isect(We, Op) ->
+    init_isect(We#we{temp={?MODULE, []}}, Op).
 
 make_bvh(#we{fs=Fs0}=We) ->
     make_bvh(gb_trees:keys(Fs0), We).
