@@ -261,8 +261,8 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
     {Vmap1, B1} = make_bvh(We10),
     {Vmap2, B2} = make_bvh(We20),
     EI0 = e3d_bvh:intersect(B1, B2),
-    I11 = #{we=>We10,map=>Vmap1,el=>[],op=>Op1},
-    I21 = #{we=>We20,map=>Vmap2,el=>[],op=>Op2},
+    I11 = #{we=>We10,map=>Vmap1,el=>[],op=>Op1, temp_es=>gb_sets:empty()},
+    I21 = #{we=>We20,map=>Vmap2,el=>[],op=>Op2, temp_es=>gb_sets:empty()},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     merge_1(EI,I11,I21). %% We should crash if we have coplanar faces in this step
 
