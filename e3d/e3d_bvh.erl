@@ -160,16 +160,15 @@ find_best_split(Nodes) ->
 			     end, e3d_vec:zero(), Nodes),
     %io:format("SPLIT: ~p < ~p~n", [{Vx,Vy,Vz}, Mean2]),
     if Vx =:= Vy, Vx =:= Vz -> %% Perfectly centered use mean
-	    %io:format("Use Mean~n",[]),
 	    if abs(Mx) < abs(Mz), abs(My) < abs(Mz) -> fun(#{c2:={_,_,V}}) -> V < Mz end;
 	       abs(Mx) < abs(My) -> fun(#{c2:={_,V,_}}) -> V < My end;
 	       true -> fun(#{c2:={V,_,_}}) -> V < Mx end
 	    end;
-       Vx < Vz, Vy =< Vz ->  %io:format("split Z ~p~n",[Mz]),
+       Vx < Vz, Vy =< Vz ->
 	    fun(#{c2:={_,_,V}}) -> V < Mz end;
-       Vx < Vy ->           %io:format("split Y ~p~n",[My]),
+       Vx < Vy ->
 	    fun(#{c2:={_,V,_}}) -> V < My end;
-       true ->              %io:format("split X ~p~n",[Mx]),
+       true ->
 	    fun(#{c2:={V,_,_}}) -> V < Mx end
     end.
 
@@ -358,7 +357,6 @@ intersect_2(#{mesh:=Mesh1, index:=I1, vs:=F1},
     F2Id = {Mesh2,I2},
     try tri_intersect(T1, T2, F1, F2, F1Id, F2Id) of
 	Intersect  ->
-	    %% io:format(" => Hit~n~n"),
 	    [Intersect|Acc]
     catch
         throw:false ->
@@ -368,12 +366,11 @@ intersect_2(#{mesh:=Mesh1, index:=I1, vs:=F1},
         throw:{line,F2Id} ->
             intersect_line(T2, T1, F2, F2Id, F1Id, Acc);
         throw:{coplanar, DD0, DD1} ->
-            io:format("TestCross: ~w ~w~n",[DD0, DD1]),
+            io:format("TestCross: ~w ~w (~w,~w)~n",[Mesh1, Mesh2, DD0, DD1]),
             io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
-                      [e3d_vec:format(V) || V <- [tuple_to_list(T1)++tuple_to_list(T2)]]),
-            io:format("~p: ~p ~p: ~p ~p~n",
-                      [?LINE, F1,F2, Vs1, Vs2]),
-            coplanar(F1,T1,F2,T2)
+                      [e3d_vec:format(V) || V <- tuple_to_list(T1)++tuple_to_list(T2)]),
+            io:format("~p: ~p ~p~n", [?LINE, F1,F2]),
+            [coplanar(F1Id,T1,F2Id,T2)|Acc]
     end.
 
 %% Möller (realtimerendering, page 590 in 2nd edition)
@@ -396,7 +393,7 @@ tri_intersect({V0,V1,V2}, {U0,U1,U2}, {IdV0,IdV1,IdV2}, {IdU0,IdU1,IdU2}, F1, F2
             %% No intersection occur? Check if triangle above or under plane 1
             throw(false);
        N1 =:= {0.0,0.0,0.0} -> %% Thin triangle (line)
-            io:format("Line: ~p ~p~n",[F1, {IdV0,IdV1,IdV2}]),
+            %% io:format("Line: ~p ~p~n",[F1, {IdV0,IdV1,IdV2}]),
             throw({line, F1});
        true ->
             ok
@@ -418,7 +415,7 @@ tri_intersect({V0,V1,V2}, {U0,U1,U2}, {IdV0,IdV1,IdV2}, {IdU0,IdU1,IdU2}, F1, F2
             %% No intersection occur? Check if triangle above or under plane 2 ??
             throw(false);
        N2 =:= {0.0,0.0,0.0} -> %% Thin triangle (line)
-            io:format("Line: ~p: ~p~n",[F2,{IdU0,IdU1,IdU2}]),
+            %% io:format("Line: ~p: ~p~n",[F2,{IdU0,IdU1,IdU2}]),
             throw({line, F2});
        true ->
             ok
@@ -514,7 +511,7 @@ coplanar(F1,_T1,F2,_T2) ->
 %% Special case for slim triangles, handle intersection test them as rays
 intersect_line({A,B,C}=Line,Tri,{VA,VB,VC},F1,{Mesh,Face}=F2, Acc) ->
     {Ray,Edge,NLen} = make_ray(Line),
-    io:format("Line: ~p ~p ~w~n",[Edge, Line, NLen]),
+    %% io:format("Line: ~p ~p ~w~n",[Edge, Line, NLen]),
     case hit_triangle(Ray, false, Tri, Mesh, Face) of
         {_, false} -> Acc;
         {#ray{o=O, d=V, f=Far}, _} ->
