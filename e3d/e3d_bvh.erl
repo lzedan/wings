@@ -370,7 +370,10 @@ intersect_2(#{mesh:=Mesh1, index:=I1, vs:=F1},
             io:format("1:{~s ~s ~s}~n2:{~s ~s ~s}~n",
                       [e3d_vec:format(V) || V <- tuple_to_list(T1)++tuple_to_list(T2)]),
             io:format("~p: ~p ~p~n", [?LINE, F1,F2]),
-            [coplanar(F1Id,T1,F2Id,T2)|Acc]
+            case coplanar(T1,T2,F1Id,F2Id) of
+                false -> Acc;
+                CoP -> [CoP|Acc]
+            end
     end.
 
 %% Möller (realtimerendering, page 590 in 2nd edition)
@@ -505,8 +508,157 @@ eps(V) -> V.
 
 %% We don't (currently) handle coplanar but return the faces that are
 %% coplanar application might be able to handle that
-coplanar(F1,_T1,F2,_T2) ->
-    {coplanar, F1, F2}.
+coplanar({{P10,P11,P12}=P1,{Q10,Q11,Q12}=Q1,{R10,R11,R12}=R1},
+         {{P20,P21,P22},{Q20,Q21,Q22},{R20,R21,R22}},FI1,FI2) ->
+    {TP1,TQ1,TR1, TP2,TQ2,TR2} =
+        case largest_dir(e3d_vec:normal(P1,Q1,R1)) of
+            1 -> %% Project onto plane YZ
+                {{Q12,Q11},{P12,P11},{R12,R11},
+                 {Q22,Q21},{P22,P21},{R22,R21}};
+            2 -> %% Project onto plane XZ
+                {{Q10,Q12},{P10,P12},{R10,R12},
+                 {Q20,Q22},{P20,P22},{R20,R12}};
+            3 -> %% Project onto plane XY
+                {{P10,P11},{Q10,Q11},{R10,R11},
+                 {P20,P21},{Q20,Q21},{R20,R21}}
+        end,
+    tri_tri_overlap_2d(TP1,TQ1,TR1, TP2,TQ2,TR2,FI1,FI2).
+
+tri_tri_overlap_2d(P1,Q1,R1, P2,Q2,R2, FI1,FI2) ->
+    io:format("~w ~w ~w vs ~w ~w ~w ~n",[P1,Q1,R1, P2,Q2,R2]),
+    case orient_2d(P1,Q1,R1) < 0.0 of
+        true ->  case orient_2d(P2,Q2,R2) < 0.0 of
+                     true  -> ccw_tri_tri_int_2d(P1,R1,Q1, P2,R2,Q2, FI1,FI2);
+                     false -> ccw_tri_tri_int_2d(P1,R1,Q1, P2,Q2,R2, FI1,FI2)
+                 end;
+        false -> case orient_2d(P2,Q2,R2) < 0.0 of
+                     true ->  ccw_tri_tri_int_2d(P1,Q1,R1, P2,R2,Q2, FI1,FI2);
+                     false -> ccw_tri_tri_int_2d(P1,Q1,R1, P2,Q2,R2, FI1,FI2)
+                 end
+    end.
+
+ccw_tri_tri_int_2d(P1,Q1,R1, P2,Q2,R2, FI1,FI2) ->
+    case orient_2d(P2,Q2,P1) >= 0.0 of
+        true ->
+            case orient_2d(Q2,R2,P1) >= 0.0 of
+                true ->
+                    case orient_2d(R2,P2,P1) >= 0.0 of
+                        true  -> {coplanar,?FUNCTION_NAME,?LINE, FI1,FI2};
+                        false -> int_test_edge(P1,Q1,R1, P2,Q2,R2, FI1,FI2)
+                    end;
+                false ->
+                    case orient_2d(R2,P2,P1) >= 0.0 of
+                        true  -> int_test_edge(P1,Q1,R1,R2,P2,Q2, FI1,FI2);
+                        false -> int_test_vertex(P1,Q1,R1,P2,Q2,R2, FI1,FI2)
+                    end
+            end;
+        false ->
+            case orient_2d(Q2,R2,P1) >= 0.0 of
+                true ->
+                    case orient_2d(R2,P2,P1) >= 0.0 of
+                        true  -> int_test_edge(P1,Q1,R1,Q2,R2,P2, FI1,FI2);
+                        false -> int_test_vertex(P1,Q1,R1,Q2,R2,P2, FI1,FI2)
+                    end;
+                false ->
+                    int_test_vertex(P1,Q1,R1,R2,P2,Q2, FI1,FI2)
+            end
+    end.
+
+int_test_vertex(P1,Q1,R1, P2,Q2,R2, FI1,FI2) ->
+    case orient_2d(R2,P2,Q1) >= 0.0 of
+        true ->
+            case orient_2d(R2,Q2,Q1) =< 0.0 of
+                true ->
+                    case orient_2d(P1,P2,Q1) > 0.0 of
+                        true ->
+                            case orient_2d(P1,Q2,Q1) =< 0.0 of
+                                true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                false -> false
+                            end;
+                        false ->
+                            case orient_2d(P1,P2,R1) >= 0.0 of
+                                true ->
+                                    case orient_2d(Q1,R1,P2) >= 0.0 of
+                                        true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                        false -> false
+                                    end;
+                                false -> false
+                            end
+                    end;
+                false ->
+                    case orient_2d(P1,Q2,Q1) =< 0.0 of
+                        true ->
+                            case orient_2d(R2,Q2,R1) =< 0.0 of
+                                true -> case orient_2d(Q1,R1,Q2) >= 0.0 of
+                                            true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                            false -> false
+                                        end;
+                                false -> false
+                            end;
+                        false -> false
+                    end
+            end;
+        false ->
+	    case orient_2d(R2,P2,R1) >= 0.0 of
+		true ->
+                    case orient_2d(Q1,R1,R2) >= 0.0 of
+                        true ->
+                            case orient_2d(P1,P2,R1) >= 0.0 of
+                                true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                false -> false
+                            end;
+                        false ->
+                            case orient_2d(Q1,R1,Q2) >= 0.0 of
+                                true ->
+                                    case orient_2d(R2,R1,Q2) >= 0.0 of
+                                        true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                        false -> false
+                                    end;
+                                false -> false
+                            end
+                    end;
+                false -> false
+            end
+    end.
+
+int_test_edge(P1,Q1,R1, P2,_Q2,R2, FI1,FI2) ->
+    case orient_2d(R2,P2,Q1) >= 0.0 of
+        true ->
+            case orient_2d(P1,P2,Q1) >= 0.0 of
+                true -> case orient_2d(P1,Q1,R2) >= 0.0 of
+                            true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                            false -> false
+                        end;
+                false -> case orient_2d(Q1,R1,P2) >= 0.0 of
+                             true -> case orient_2d(R1,P1,P2) >= 0.0 of
+                                         true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                         false -> false
+                                     end;
+                             false -> false
+                         end
+            end;
+        false ->
+            case orient_2d(R2,P2,R1) >= 0.0 of
+                true ->
+                    case orient_2d(P1,P2,R1) >= 0.0 of
+                        true ->
+                            case orient_2d(P1,R1,R2) >= 0.0 of
+                                true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                false ->
+                                    case orient_2d(Q1,R1,R2) >= 0.0 of
+                                        true -> {coplanar,?FUNCTION_NAME,?LINE, FI1, FI2};
+                                        false -> false
+                                    end
+                            end;
+                        false -> false
+                    end;
+                false -> false
+            end
+    end.
+
+
+orient_2d({A0,A1},{B0,B1},{C0,C1}) ->
+    ((A0-C0)*(B1-C1)-(A1-C1)*(B0-C0)).
 
 %% Special case for slim triangles, handle intersection test them as rays
 intersect_line({A,B,C}=Line,Tri,{VA,VB,VC},F1,{Mesh,Face}=F2, Acc) ->

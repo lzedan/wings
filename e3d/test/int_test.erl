@@ -57,7 +57,11 @@ start() ->
     %% Coplanar
     CoPl = test(Ref, {0.25, -1.0, -0.25}),
     io:format("~p:~n ~s~n", [length(CoPl),[io_lib:format(" ~w~n", [H]) || H <- CoPl]]),
-
+    [_,_] = test_tri(Ref, [{0.4,1.0,-0.4},{0.6,1.0,-0.4},{0.6,1.0,0.0}]),
+    [] = test_tri(Ref, [{0.51,1.0,-0.4},{0.6,1.0,-0.4},{0.6,1.0,0.0}]),
+    Z1 = fun(Point) -> e3d_vec:add({0.0,0.0,1.0}, Point) end,
+    ok = test_tri(make_tri(2, [getv(5,?VS),getv(0,?VS),getv(3,?VS)]),
+                  [Z1(P) || P <- [getv(5,?VS),getv(3,?VS),getv(4,?VS)]]),
     ok.
 
 test_tri(Ref, TriVs) ->
@@ -80,6 +84,9 @@ test2(Hits0, _Ref, _Other) ->
      || #{mf1:={M1,F1},mf2:={M2,F2},p1:={P1,_,_},p2:={P2,_,_}} <- Hits0],
     Hits0.
 
+getv(Ind, Vs) ->
+    element(1+Ind, Vs).
+
 make_tri(MeshId, Vs) ->
     GetFace = fun({verts,_Face}) -> {0,1,2};
 		 (verts) -> array:from_list(Vs);
@@ -92,7 +99,7 @@ make_model(MeshId, Trans) ->
     TFs = list_to_tuple(Fs),
     Vs = array:from_list([e3d_vec:add(Trans, Point) || Point <- tuple_to_list(?VS)]),
     %% format_faces(0, Fs, Vs),
-    GetFace = fun({verts,Face}) -> element(Face+1, TFs);
+    GetFace = fun({verts,Face}) -> getv(Face, TFs);
 		 (verts) -> Vs;
 		 (meshId) -> MeshId
 	      end,
