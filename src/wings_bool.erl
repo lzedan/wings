@@ -655,13 +655,14 @@ inset_face(Loop, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
     Ids = lists:seq(IdStart, IdEnd),
     F1 = IdStart, %% F2 = IdStart+1,
     E1 = IdEnd+1, %% E2 = IdEnd+2,
+    ?D("Ids: ~w Ex: ~w ~w ~n",[Ids, E1, E1+1]),
 
     LoopPos = [{E, vmap_pos(V,Vmap0)} || E = #{v:=V} <- Loop],
     DistEdges = [{e3d_vec:dist_sqr(element(2, lists:nth(V1, LoopPos)),array:get(V2, Vpt0)),
                   {V1+IdStart-1, V2}
                  } || V1 <- lists:seq(1, NumberOfNew-1),V2 <- wings_face:vertices_ccw(Face, We0)],
     [{_,{VI1, VO1}},{_,{VI2,VO2}}|_] = lists:sort(DistEdges),
-
+    ?D("Connect ~w ~w~n", [{VI1, VO1},{VI2,VO2}]),
     E1R = #edge{vs=VO1, ve=VI1, lf=F1+1, rf=F1},
     E2R = #edge{vs=VO2, ve=VI2, lf=F1, rf=F1+1},
     Etab1 = array:set(E1, E1R, Etab0),
@@ -682,6 +683,11 @@ inset_face(Loop, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
     WeR = wings_facemat:assign(Mat, [F1, F1+1], We1#we{fs=Ftab,es=Etab,vc=Vct,vp=Vpt}),
     TEs = gb_sets:union(TEs0, gb_sets:from_ordset([E1,E1+1])),
     %% Update Vmap???
+    io:format("Ftab: ~p~n", [gb_trees:to_list(Ftab)]),
+    io:format("Etab: ~p~n", [array:to_orddict(Etab)]),
+    io:format("Vct: ~p~n",  [array:to_orddict(Vct)]),
+
+    put(where, {?MODULE, ?LINE}),
     ok = wings_we_util:validate(WeR),
     EL = wings_face:to_edges([Face], WeR),
     case keep_inside(LoopPos, Face, We0) of
@@ -696,34 +702,35 @@ make_inset_edges(Id, First, Last, V1, V2, Face, SFace, Etab0) ->
     Next = if Id =:= Last -> First;
               true -> Id+1
            end,
-    OutF = if Id < V1 -> SFace;
-              Id >= V2 -> SFace;
+    OutF = if Id < V1 -> SFace+1;
+              Id < V2 -> SFace;
               true -> SFace+1
            end,
-    Ltsu = if Id =:= V1 -> Last+1;
-              Id =:= V2 -> Last+2;
-              true -> Prev
-           end,
-    Lptr = if Next =:= V1 -> Last+1;
+    Rtsu = if Next =:= V1 -> Last+1;
               Next =:= V2 -> Last+2;
               true -> Next
            end,
+    Rtpr = if Id =:= V1 -> Last+1;
+              Id =:= V2 -> Last+2;
+              true -> Prev
+           end,
+
     %% Make and insert face edge
-    ERec = #edge{vs=Id,ve=Next,lf=OutF,rf=Face,
-                 ltsu=Ltsu,ltpr=Lptr,
-                 rtsu=Next,rtpr=Prev},
+    ERec = #edge{vs=Id,ve=Next,lf=Face,rf=OutF,
+                 ltsu=Prev,ltpr=Next,
+                 rtsu=Rtsu,rtpr=Rtpr},
     Etab1 = array:set(Id, ERec, Etab0),
     %% Update connected edge if this vertes should be connected to
     %% outer loop
-    if Ltsu =:= Prev ->
+    if Rtsu =:= Next ->
             Etab1;
        true ->
-            E1 = array:get(Ltsu, Etab1),
+            E1 = array:get(Rtsu, Etab1),
             %% Assert
-            if Id =:= V1 -> #edge{ve=V1, rf=SFace} = E1;
-               Id =:= V2 -> #edge{ve=V2, lf=SFace} = E1
+            if Next =:= V1 -> #edge{ve=V1, rf=SFace} = E1;
+               Next =:= V2 -> #edge{ve=V2, lf=SFace} = E1
             end,
-            array:set(Ltsu, #edge{ltpr=Id, rtsu=Prev}, Etab1)
+            array:set(Rtsu, E1#edge{ltpr=Id, rtsu=Next}, Etab1)
     end.
 
 update_inset_edges(V1,V2,Face,E1,F1,Etab0,We) ->
@@ -733,64 +740,71 @@ update_inset_edges(V1,V2,Face,E1,F1,Etab0,We) ->
                      (Edge, _F, #edge{ve=VE, rf=F}, _)
                         when VE =:= V1, F =:= Face -> Edge;
                      (_E,_F,_ER,A) ->
-                          io:format("~p ~p ~p ~n",[_E,_F,_ER]),
+                          %%io:format("~p ~p ~p ~n",[_E,_F,_ER]),
                           A
                   end,
                   false, V1, We),
-    ?D("Searching ~p in ~p => edge ~w ~n", [V1,Face,StartEdge]),
+    ?D("Searching ~p in ~p => Startedge ~w ~n", [V1,Face,StartEdge]),
     All = fun(_V, E, ER, Acc) -> [{E, ER} | Acc] end,
     ERecs0 = wings_face:fold(All, [], Face, StartEdge, We),
-    [First|Recs] = lists:reverse(ERecs0),
-    case First of
-        {Id, #edge{ve=V1, rf=Face, rtsu=Next}} ->
+    [First0|Recs] = lists:reverse(ERecs0),
+    case First0 of
+        {Id, #edge{ve=V1, rf=Face, rtsu=Next}=Rec} ->
             #edge{vs=V1, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            Etab  = array:set(Id, #edge{rf=F1, rtsu=E1}, Etab1),
-            update_inset_es2(Recs++[First],Id,[V1,V2,done],Face,E1,F1,Etab);
-        {Id, #edge{vs=V1, lf=Face, ltsu=Next}} ->
+            First = Rec#edge{rf=F1, rtsu=E1},
+            Etab  = array:set(Id, First, Etab1),
+            ?D("~w: ~p~n",[Id, First]),
+            update_inset_es2(Recs++[{Id,First}],Id,[V1,V2,done],Face,E1,F1,Etab);
+        {Id, #edge{vs=V1, lf=Face, ltsu=Next}=Rec} ->
             #edge{vs=V1, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            Etab  = array:set(Id, #edge{lf=F1, ltsu=E1}, Etab1),
-            update_inset_es2(Recs++[First],Id,[V1,V2,done],Face,E1,F1,Etab)
+            First = Rec#edge{lf=F1, ltsu=E1},
+            Etab  = array:set(Id, First, Etab1),
+            ?D("~w: ~p~n",[Id, First]),
+            update_inset_es2(Recs++[{Id,First}],Id,[V1,V2,done],Face,E1,F1,Etab)
     end.
 
 update_inset_es2([{Id, Rec0}|Recs], Prev, [V1|NextV], Face, E1, F1, Etab) ->
     ?D("Want V:~w in F:~w ~n",[V1, Face]),
-    ?D("~w ~w~n",[Id,Rec0]),
     case Rec0 of
-        #edge{lf=Face, ve=V1, ltpr=Prev} ->
-            Rec = Rec0#edge{ltpr=E1, lf=F1+1},
+        #edge{lf=F, ve=V1, ltpr=Prev} when F =:= Face; F =:= F1 ->
+            Rec = Rec0#edge{ltpr=E1},
+            ?D("U: ~w: ~p~n",[Id, Rec]),
             update_inset_es1([{Id, Rec}|Recs], NextV, Face, E1+1, F1+1, Etab);
-        #edge{rf=Face, vs=V1, rtpr=Prev} ->
-            Rec = Rec0#edge{rtpr=E1, rf=F1+1},
+        #edge{rf=F, vs=V1, rtpr=Prev} when F =:= Face; F =:= F1 ->
+            Rec = Rec0#edge{rtpr=E1},
+            ?D("U: ~w: ~p~n",[Id, Rec]),
             update_inset_es1([{Id, Rec}|Recs], NextV, Face, E1+1, F1+1, Etab)
     end.
 
 update_inset_es1([{Id, Rec0}|Recs], [V2|_]=VC, Face, E1, F1, Etab0) ->
-    ?D("~w ~w~n",[Id,Rec0]),
     case Rec0 of
-        #edge{rf=Face, ve=V2, rtsu=Next} ->
+        #edge{rf=Face, ve=V2, rtsu=Next}=Rec ->
             #edge{vs=V2, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            Etab  = array:set(Id, #edge{rf=F1, rtsu=E1}, Etab1),
-            update_inset_es2(Recs,Id,VC,Face,E1-1,F1-1,Etab);
-        #edge{vs=V2, lf=Face, ltsu=Next} ->
+            Etab  = array:set(Id, Rec#edge{rf=F1, rtsu=E1}, Etab1),
+            ?D("~w: ~p~n",[Id, Rec#edge{rf=F1, rtsu=E1}]),
+            update_inset_es2(Recs,Id,VC,Face,E1,F1-1,Etab);
+        #edge{vs=V2, lf=Face, ltsu=Next}=Rec ->
             #edge{vs=V2, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            Etab  = array:set(Id, #edge{lf=F1, ltsu=E1}, Etab1),
-            update_inset_es2(Recs,Id,VC,Face,E1-1,F1-1,Etab);
-        #edge{rf=Face} ->
-            Etab = array:set(Id, #edge{rf=F1}, Etab0),
+            Etab  = array:set(Id, Rec#edge{lf=F1, ltsu=E1}, Etab1),
+            ?D("~w: ~p~n",[Id, Rec#edge{lf=F1, ltsu=E1}]),
+            update_inset_es2(Recs,Id,VC,Face,E1,F1-1,Etab);
+        #edge{rf=Face}=Rec ->
+            Etab = array:set(Id, Rec#edge{rf=F1}, Etab0),
+            ?D("~w: ~p~n",[Id, Rec#edge{rf=F1}]),
             update_inset_es1(Recs, VC, Face, E1, F1, Etab);
-        #edge{lf=Face} ->
-            Etab = array:set(Id, #edge{lf=F1}, Etab0),
+        #edge{lf=Face}=Rec ->
+            Etab = array:set(Id, Rec#edge{lf=F1}, Etab0),
+            ?D("~w: ~p~n",[Id, Rec#edge{lf=F1}]),
             update_inset_es1(Recs, VC, Face, E1, F1, Etab);
-        #edge{lf=LF,rf=RF} when LF =:= F1; RF =:= F1 ->
+        #edge{} when Recs =:= [] ->
             %% First edge already updated now
-            update_inset_es1(Recs, VC, Face, E1, F1, Etab0)
-    end;
-update_inset_es1([], [done], _Face, _, _, Etab) ->
-    Etab.
+            ?D("Last ~w: ~p~n",[Id, Rec0]),
+            array:set(Id, Rec0, Etab0)
+    end.
 
 keep_inside(EL, Face, We) ->
     Center = wings_face:center(Face,We),
