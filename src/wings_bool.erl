@@ -645,9 +645,9 @@ make_face_vs_1([#{op:=split_face,v:=V}|Ss], Edge, Vmap, EL, We0) ->
 make_face_vs_1([], _, Vmap, EL, We) ->
     {EL, Vmap, We}.
 
-inset_face(Loop, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
-    Face = pick_ref_face(Loop, undefined),
-    NumberOfNew = length(Loop),
+inset_face(Loop0, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
+    Face = pick_ref_face(Loop0, undefined),
+    NumberOfNew = length(Loop0),
     true = NumberOfNew > 2, %% Otherwise something is wrong
 
     {IdStart, We1} = wings_we:new_ids(NumberOfNew+2, We0),
@@ -657,19 +657,17 @@ inset_face(Loop, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
     E1 = IdEnd+1, %% E2 = IdEnd+2,
     ?D("Ids: ~w Ex: ~w ~w ~n",[Ids, E1, E1+1]),
 
-    LoopPos0 = [{E, vmap_pos(V,Vmap0)} || E = #{v:=V} <- Loop],
+    Pos0 = [vmap_pos(V,Vmap0) || #{v:=V} <- Loop0],
     FaceN = wings_face:normal(Face, We0),
-    LoopN = e3d_vec:normal([V || {_,V} <- LoopPos0]),
-    LoopPos = case e3d_vec:dot(FaceN,LoopN) > 0.0 of
-                  true -> LoopPos0;
-                  false -> lists:reverse(LoopPos0)
-              end,
+    LoopN = e3d_vec:normal(Pos0),
+    {Loop,Pos} = case e3d_vec:dot(FaceN,LoopN) > 0.0 of
+                     true -> {Loop0, Pos0};
+                     false -> {lists:reverse(Loop0), lists:reverse(Pos0)}
+                 end,
 
-    DistEdges = [{e3d_vec:dist_sqr(element(2, lists:nth(V1, LoopPos)),array:get(V2, Vpt0)),
-                  {V1+IdStart-1, V2}}
-                 || V1 <- lists:seq(1, NumberOfNew),
-                    V2 <- wings_face:vertices_ccw(Face, We0)],
-    {{VI1, VO1},{VI2,VO2}} = pick_vs_pairs(DistEdges),
+    Edges = [{{lists:nth(V1, Pos),array:get(V2, Vpt0)},{V1+IdStart-1, V2}}
+             || V1 <- lists:seq(1, NumberOfNew), V2 <- wings_face:vertices_ccw(Face, We0)],
+    {{VI1, VO1},{VI2,VO2}} = pick_vs_pairs(Edges, FaceN),
     ?D("Connect ~w ~w~n", [{VO1, VI1},{VO2,VI2}]),
     E1R = #edge{vs=VO1, ve=VI1, lf=F1+1, rf=F1},
     E2R = #edge{vs=VO2, ve=VI2, lf=F1, rf=F1+1},
@@ -686,8 +684,8 @@ inset_face(Loop, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
     Ftab2 = gb_trees:insert(F1+1, E1+1, Ftab1),
     Ftab  = gb_trees:update(Face, IdStart, Ftab2),
     Vct = lists:foldl(fun(Id, Acc) -> array:set(Id,Id,Acc) end, Vct0, Ids),
-    Vpt = lists:foldl(fun({Id, {_,Pos}}, Vtab) -> array:set(Id, Pos, Vtab) end,
-                      Vpt0, lists:zip(Ids, LoopPos)),
+    Vpt = lists:foldl(fun({Id, Point}, Vtab) -> array:set(Id, Point, Vtab) end,
+                      Vpt0, lists:zip(Ids, Pos)),
     WeR = wings_facemat:assign(Mat, [F1, F1+1], We1#we{fs=Ftab,es=Etab,vc=Vct,vp=Vpt}),
     TEs = gb_sets:union(TEs0, gb_sets:from_ordset([E1,E1+1])),
     %% Update Vmap???
@@ -698,7 +696,7 @@ inset_face(Loop, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
     put(where, {?MODULE, ?LINE}),
     ok = wings_we_util:validate(WeR),
     EL = wings_face:to_edges([Face], WeR),
-    case keep_inside(LoopPos, Face, We0) of
+    case keep_inside(Loop, Pos) of
         true -> {EL, [Face], TEs, Vmap0, WeR};
         false -> {EL, [], TEs, Vmap0, WeR}
     end.
@@ -756,12 +754,10 @@ update_inset_edges(V1,V2,Face,E1,F1,Etab0,We) ->
                         when VS =:= V1, F =:= Face -> Edge;
                      (Edge, _F, #edge{ve=VE, rf=F}, _)
                         when VE =:= V1, F =:= Face -> Edge;
-                     (_E,_F,_ER,A) ->
-                          %%io:format("~p ~p ~p ~n",[_E,_F,_ER]),
-                          A
+                     (_E,_F,_ER,A) -> A %%io:format("~p ~p ~p ~n",[_E,_F,_ER]),A
                   end,
                   false, V1, We),
-    ?D("Searching ~p in ~p => Startedge ~w ~n", [V1,Face,StartEdge]),
+    %% ?D("Searching ~p in ~p => Startedge ~w ~n", [V1,Face,StartEdge]),
     All = fun(_V, E, ER, Acc) -> [{E, ER} | Acc] end,
     ERecs0 = wings_face:fold(All, [], Face, StartEdge, We),
     [First0|Recs] = lists:reverse(ERecs0),
@@ -769,31 +765,31 @@ update_inset_edges(V1,V2,Face,E1,F1,Etab0,We) ->
         {Id, #edge{ve=V1, rf=Face, rtsu=Next}=Rec} ->
             #edge{vs=V1, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
+            %% ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
             First = Rec#edge{rf=F1, rtsu=E1},
             Etab  = array:set(Id, First, Etab1),
-            ?D("~w: ~p~n",[Id, First]),
+            %% ?D("~w: ~p~n",[Id, First]),
             update_inset_es2(Recs++[{Id,First}],Id,[V1,V2,done],Face,E1,F1+1,Etab);
         {Id, #edge{vs=V1, lf=Face, ltsu=Next}=Rec} ->
             #edge{vs=V1, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
+            %% ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
             First = Rec#edge{lf=F1, ltsu=E1},
             Etab  = array:set(Id, First, Etab1),
-            ?D("~w: ~p~n",[Id, First]),
+            %% ?D("~w: ~p~n",[Id, First]),
             update_inset_es2(Recs++[{Id,First}],Id,[V1,V2,done],Face,E1,F1+1,Etab)
     end.
 
 update_inset_es2([{Id, Rec0}|Recs], Prev, [V1|NextV], Face, E1, F1, Etab) ->
-    ?D("Want V:~w in F:~w new(~w) ~n",[V1, Face, F1]),
+    %% ?D("Want V:~w in F:~w new(~w) ~n",[V1, Face, F1]),
     case Rec0 of
         #edge{lf=F, ve=V1, ltpr=Prev} when F =:= Face; F =:= F1 ->
             Rec = Rec0#edge{ltpr=E1},
-            ?D("U: ~w: ~p~n",[Id, Rec]),
+            %% ?D("U: ~w: ~p~n",[Id, Rec]),
             update_inset_es1([{Id, Rec}|Recs], NextV, Face, E1+1, F1, Etab);
         #edge{rf=F, vs=V1, rtpr=Prev} when F =:= Face; F =:= F1 ->
             Rec = Rec0#edge{rtpr=E1},
-            ?D("U: ~w: ~p~n",[Id, Rec]),
+            %% ?D("U: ~w: ~p~n",[Id, Rec]),
             update_inset_es1([{Id, Rec}|Recs], NextV, Face, E1+1, F1, Etab)
     end.
 
@@ -802,35 +798,35 @@ update_inset_es1([{Id, Rec0}|Recs], [V2|_]=VC, Face, E1, F1, Etab0) ->
         #edge{rf=Face, ve=V2, rtsu=Next}=Rec ->
             #edge{vs=V2, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
+            %% ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
             Etab  = array:set(Id, Rec#edge{rf=F1, rtsu=E1}, Etab1),
-            ?D("~w: ~p~n",[Id, Rec#edge{rf=F1, rtsu=E1}]),
+            %% ?D("~w: ~p~n",[Id, Rec#edge{rf=F1, rtsu=E1}]),
             update_inset_es2(Recs,Id,VC,Face,E1,F1-1,Etab);
         #edge{vs=V2, lf=Face, ltsu=Next}=Rec ->
-            ?D("Exp vs:~w rf:~w~n",[V2, F1]),
+            %% ?D("Exp vs:~w rf:~w~n",[V2, F1]),
             #edge{vs=V2, rf=F1} = C1 = array:get(E1, Etab0),
             Etab1 = array:set(E1, C1#edge{ltsu=Next,rtpr=Id}, Etab0),
-            ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
+            %% ?D("~w: ~p~n",[E1, C1#edge{ltsu=Next,rtpr=Id}]),
             Etab  = array:set(Id, Rec#edge{lf=F1, ltsu=E1}, Etab1),
-            ?D("~w: ~p~n",[Id, Rec#edge{lf=F1, ltsu=E1}]),
+            %% ?D("~w: ~p~n",[Id, Rec#edge{lf=F1, ltsu=E1}]),
             update_inset_es2(Recs,Id,VC,Face,E1,F1-1,Etab);
         #edge{rf=Face}=Rec ->
             Etab = array:set(Id, Rec#edge{rf=F1}, Etab0),
-            ?D("~w: ~p~n",[Id, Rec#edge{rf=F1}]),
+            %% ?D("~w: ~p~n",[Id, Rec#edge{rf=F1}]),
             update_inset_es1(Recs, VC, Face, E1, F1, Etab);
         #edge{lf=Face}=Rec ->
             Etab = array:set(Id, Rec#edge{lf=F1}, Etab0),
-            ?D("~w: ~p~n",[Id, Rec#edge{lf=F1}]),
+            %% ?D("~w: ~p~n",[Id, Rec#edge{lf=F1}]),
             update_inset_es1(Recs, VC, Face, E1, F1, Etab);
         #edge{} when Recs =:= [] ->
             %% First edge already updated now
-            ?D("Last ~w: ~p~n",[Id, Rec0]),
+            %% ?D("Last ~w: ~p~n",[Id, Rec0]),
             array:set(Id, Rec0, Etab0)
     end.
 
-keep_inside(EL, Face, We) ->
-    Center = wings_face:center(Face,We),
-    VsPoint = e3d_kd3:from_list(EL),
+keep_inside(EL, PosList) ->
+    Center = e3d_vec:average(PosList),
+    VsPoint = e3d_kd3:from_list(lists:zip(EL,PosList)),
     %% The furtherest vertex should be convex,
     %% and it's normal should point towards the center or away.
     {#{o_n:=ON},Far} = find_furtherest(Center, VsPoint),
@@ -847,17 +843,20 @@ find_far2(Pos, {Best, Kd3}) ->
         Other -> find_far2(Pos, Other)
     end.
 
-pick_vs_pairs(DistEdges) ->
-    [{_,First}|Rest] = lists:sort(DistEdges),
-    io:format("~p ~p ~n",[First, Rest]),
-    pick_vs_pairs(Rest, First).
+pick_vs_pairs(Edges, N) ->
+    WithDist = [{e3d_vec:dist_sqr(P1,P2),Edge} ||
+                   {{P1,P2},_}=Edge <- Edges],
+    [{_,First}|Rest] = lists:sort(WithDist),
+    pick_vs_pairs(Rest, First, N).
 
-pick_vs_pairs([{_, {A,B}=Next}|_], {C,D}=F)
+pick_vs_pairs([{_, {{P3,P4}, {A,B}=E1}}|Rest], {{P1,P2},{C,D}=E0}, N)
   when A =/= C, B=/= D ->
-    %% Check if they cross BUGBUG
-    {F,Next};
-pick_vs_pairs([_|Rest], F) ->
-    pick_vs_pairs(Rest, F).
+    case e3d_vec:line_line_intersect(P3,P4,P1,P2,N) of
+        true -> pick_vs_pairs(Rest, E0, N);
+        false -> {E0,E1}
+    end;
+pick_vs_pairs([_|Rest], E0, Dir) ->
+    pick_vs_pairs(Rest, E0, Dir).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 filter_tri_edges({L1,L2}, We1,We2) ->
