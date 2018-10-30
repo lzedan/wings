@@ -318,32 +318,34 @@ weld({Fs01,#we{temp={?MODULE,Es01}}=We01}, TEs01, {Fs02,#we{temp={?MODULE, Es02}
     [Fs1,Fs2] = [Fs || {face,Fs,weld} <- Rs],
     FacePairs = lists:zip(Fs1,Fs2),
     SelEs = lists:append([Es || {edge,Es,border} <- Rs]),
-    TempEs0 = lists:append([Es || {edge,Es,temp} <- Rs]),
+    TempEs = lists:append([Es || {edge,Es,temp} <- Rs]),
+    %% ?D("Temp ~p:~w~n",[We01#we.id, TEs1]),
+    %% ?D("Temp ~p:~w~n",[We02#we.id, TEs2]),
+    %% ?D(" =>  ~w~n",[TempEs]),
     %?D("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
     Weld = fun({F1,F2}, WeAcc) -> do_weld(F1,F2,WeAcc) end,
-    {We1, BorderEs} = lists:foldl(Weld, {We0,[]}, FacePairs),
+    {We1, BorderEs0} = lists:foldl(Weld, {We0,[]}, FacePairs),
+    BorderEs1 = ordsets:from_list(BorderEs0),
 
-    #we{es=Etab} = We2 = cleanup_temp_edges(TempEs0, We1),
-    Es = wings_util:array_keys(Etab),
-    Borders = ordsets:intersection(ordsets:from_list(BorderEs++SelEs), Es),
-    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We2)),
-    Tess1 = [Face || Face <- BorderFs, wings_face:vertices(Face, We2) > 5],
-    We3 = wings_tesselation:quadrangulate(Tess1, We2),
+    %% Cleanup temp edges (and it's faces)
+    {CFs0, We2} = cleanup_temp_edges(TempEs, We1),
+    %% dissolve rebuilds we need to update
+    BorderEs2 = ordsets:intersection(BorderEs1, wings_util:array_keys(We2#we.es)),
+    %% We really need to keep track of edges (and its vertices) for the second
+    %% pass if temp edges is left and bordering faces get quadrangalute it leaves
+    %% new edges..
+    CFS1 = ordsets:intersection(CFs0, gb_trees:keys(We2#we.fs)),
+    CFS2 = [Face || Face <- CFS1, wings_face:vertices(Face, We2) > 5],
+    We3 = wings_tesselation:quadrangulate(CFS2, We2),
+    {_, We4} = cleanup_temp_edges(TempEs, We3),
 
-    %% We make cleanup edges a sceond time after quadrangulate
-    %% To handle tubes inset into one face
-    TempEs = ordsets:intersection(ordsets:from_list(TempEs0), Es),
-    case TempEs =:= [] of
-        true ->
-            {wings_facemat:gc(We3), Borders};
-        false ->
-            Tess2 = wings_face:from_edges(TempEs, We3),
-            #we{es=Etab2, fs=Ftab} = We4 = cleanup_temp_edges(TempEs, We3),
-            Tess3 = gb_sets:intersection(Tess2, gb_sets:from_ordset(gb_trees:keys(Ftab))),
-            We5 = wings_tesselation:quadrangulate(gb_sets:to_list(Tess3), We4),
-            {wings_facemat:gc(We5),
-             ordsets:intersection(Borders, wings_util:array_keys(Etab2))}
-    end.
+    %% Calculate border edges and quadrangulate border faces
+    Es = wings_util:array_keys(We4#we.es),
+    Borders = ordsets:intersection(ordsets:from_list(BorderEs2++SelEs), Es),
+    BorderFs = gb_sets:to_list(wings_face:from_edges(Borders, We4)),
+    Tess1 = [Face || Face <- BorderFs, wings_face:vertices(Face, We4) > 5],
+    We = wings_tesselation:quadrangulate(Tess1, We4),
+    {wings_facemat:gc(We), Borders}.
 
 do_weld(Fa, Fb, {We0, Acc}) ->
     [Va|_] = wings_face:vertices_ccw(Fa, We0),
@@ -363,19 +365,27 @@ do_weld(Fa, Fb, {We0, Acc}) ->
     BorderEdges = wings_face:to_edges([Fa,Fb], We0),
     {We, BorderEdges ++ Acc}.
 
-cleanup_temp_edges(Es, We0) ->
-    %% ?D("Dissolve Es: ~w: ~w~n", [We0#we.id, Es]),
-    Fs = gb_sets:to_list(wings_face:from_edges(Es, We0)),
-    {We1,_Bad} = wings_edge:dissolve_edges(Es, Fs, We0),
-    ?D("Bad faces: ~w~n",[_Bad]),
-    Vs = wings_edge:to_vertices(Es, We0),
-    wings_edge:dissolve_isolated_vs(Vs, We1).
+cleanup_temp_edges(DelEs0, #we{es=Etab}=We0) ->
+    Es = wings_util:array_keys(Etab),
+    case ordsets:intersection(ordsets:from_list(DelEs0), Es) of
+        [] -> {[], We0};
+        DelEs ->
+            ?D("Dissolve Es: ~w: ~w~n", [We0#we.id, DelEs]),
+            Fs = gb_sets:to_list(wings_face:from_edges(DelEs, We0)),
+            {We1,_Bad} = wings_edge:dissolve_edges(DelEs, Fs, We0),
+            ?D("Id next: ~w~n",[We1#we.next_id]),
+            ?D("Bad faces: ~w~n",[_Bad]),
+            Vs = wings_edge:to_vertices(DelEs, We0),
+            {Fs, wings_edge:dissolve_isolated_vs(Vs, We1)}
+    end.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-make_verts(Loops, Vmap, TEs1, TEs2, We10, We20) ->
+make_verts(Loops, Vmap, TEs1, TEs2, We1, We2) ->
     Empty = gb_sets:empty(),
-    make_verts(Loops, Vmap, Empty, We10, Vmap, Empty, We20, TEs1, TEs2, [], []).
+    %% ?D("Temp ~p:~w~n",[We1#we.id, gb_sets:to_list(TEs1)]),
+    %% ?D("Temp ~p:~w~n",[We2#we.id, gb_sets:to_list(TEs2)]),
+    make_verts(Loops, Vmap, Empty, We1, Vmap, Empty, We2, TEs1, TEs2, [], []).
 
 make_verts([{L1,L2}=L12|Ls], Vm10, Fs10, We10, Vm20, Fs20, We20, TEs10, TEs20, Acc, Cont) ->
     case check_if_used(L1,Fs10) orelse check_if_used(L2,Fs20) of
