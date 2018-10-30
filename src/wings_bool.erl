@@ -18,7 +18,7 @@
 
 -define(EPSILON, 1.0e-8).  %% used without SQRT() => 1.0e-4
 
-%-define(DEBUG,true).
+-define(DEBUG,true).
 -ifdef(DEBUG).
 %% Lots of debug stuff in here, maybe it can tell a thing or two of
 %% the problems I have had with making this, sigh.
@@ -402,6 +402,8 @@ make_verts([{L1,L2}=L12|Ls], Vm10, Fs10, We10, Vm20, Fs20, We20, TEs10, TEs20, A
     end;
 make_verts([], _, Fs10, We1, _, Fs20, We2, TEs1, TEs2, Acc, Cont) ->
     {Es1, Es2} = lists:unzip(Acc),
+    %% ?D("Temp ~p:~w~n",[We1#we.id, gb_sets:to_list(TEs1)]),
+    %% ?D("Temp ~p:~w~n",[We2#we.id, gb_sets:to_list(TEs2)]),
     I1 = #{we=>We1, el=>Es1, temp_es=>TEs1},
     I2 = #{we=>We2, el=>Es2, temp_es=>TEs2},
     case Cont of
@@ -698,13 +700,6 @@ inset_face(Loop0, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) -
                       Vpt0, lists:zip(Ids, Pos)),
     WeR = wings_facemat:assign(Mat, [F1, F1+1], We1#we{fs=Ftab,es=Etab,vc=Vct,vp=Vpt}),
     TEs = gb_sets:union(TEs0, gb_sets:from_ordset([E1,E1+1])),
-    %% Update Vmap???
-    %% io:format("Ftab: ~p~n", [gb_trees:to_list(Ftab)]),
-    %% io:format("Etab: ~p~n", [array:to_orddict(Etab)]),
-    %% io:format("Vct: ~p~n",  [array:to_orddict(Vct)]),
-
-    put(where, {?MODULE, ?LINE}),
-    ok = wings_we_util:validate(WeR),
     EL = wings_face:to_edges([Face], WeR),
     case keep_inside(Loop, Pos) of
         true -> {EL, [Face], TEs, Vmap0, WeR};
@@ -922,7 +917,7 @@ edge_to_face(#{op:=split_edge}=Orig) ->
 build_vtx_loops(Edges, _Acc) ->
     G = make_lookup_table(Edges),
     Comps = digraph_utils:components(G),
-    %% ?D("Cs: ~w~n",[Comps]),
+    ?D("Cs: ~w~n",[Comps]),
     Res = [build_vtx_loop(C, G) || C <- Comps],
     [] = digraph:edges(G), %% Assert that we have completed all edges
     digraph:delete(G),
@@ -947,6 +942,10 @@ build_vtx_loop([V|_Vs], G) ->
     case build_vtx_loop(V, G, []) of
         {V, Acc} -> Acc;
         {_V, _Acc} ->
+            Eds0 = digraph:edges(G),
+            Eds1 = [digraph:edge(G,E) || E <- Eds0],
+            Eds = lists:keysort(2, lists:keysort(3, Eds1)),
+            [io:format("~w~n",[E]) || E <- Eds],
             ?dbg("V ~p => ~p~n",[V,_Acc]),
             ?dbg("Last ~p~n",[_V]),
             error(incomplete_edge_loop)
@@ -957,7 +956,7 @@ build_vtx_loop(V0, G, Acc) ->
         [] -> {V0, Acc};
         Es ->
             {Edge, Next, Ei} = pick_edge(Es, V0, undefined),
-            %?D("~p in ~P~n => ~p ~n",[V0, Es, 10, Next]),
+            ?D("~p in ~W => ~p ~n",[V0, Es, 10, Next]),
             digraph:del_edge(G, Edge),
             build_vtx_loop(Next, G, [Ei,V0|Acc])
     end.
