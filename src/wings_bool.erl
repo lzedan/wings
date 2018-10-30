@@ -25,7 +25,7 @@
 -define(DBG_TRY(Do,WE1,WE2),
         try Do
         catch error:__R ->
-                ?dbg("ERROR: ~p:~n ~P~n", [__R, erlang:get_stacktrace(), 20]),
+                ?dbg("ERROR: ~w:~n ~P~n", [__R, erlang:get_stacktrace(), 20]),
                 #{we=>WE1,delete=>none, el=>[], sel_es=>[], error=>WE2};
               exit:_ ->
                 #{we=>WE1,delete=>none, el=>[], sel_es=>[], error=>WE2};
@@ -234,6 +234,7 @@ merge_2(done,
                    #{sel_es=>Es, we=>We, delete=>Del}
            end,
     ?DBG_TRY(Weld(), element(2, DRes1), element(2, DRes2)).
+    %% ?DBG_TRY(Weld(), get(we1), get(we2)).
     %% #{we=>We1, delete=>none, sel_es=>gb_sets:to_list(TEs1),
     %%   error=>We2, dummy=>{DRes1, DRes2, catch Weld()}}.
 
@@ -324,10 +325,16 @@ weld({Fs01,#we{temp={?MODULE,Es01}}=We01}, TEs01, {Fs02,#we{temp={?MODULE, Es02}
     %% ?D("Temp ~p:~w~n",[We02#we.id, TEs2]),
     %% ?D(" =>  ~w~n",[TempEs]),
     %?D("After ~p: ~w~n",[We0#we.id,gb_trees:keys(We0#we.fs)]),
+    ok = wings_we_util:validate(We01),
+    ok = wings_we_util:validate(We02),
+    ok = wings_we_util:validate(We0),
+    ?PUT(we1,We01),
+    ?PUT(we2,undefined),
     Weld = fun({F1,F2}, WeAcc) -> do_weld(F1,F2,WeAcc) end,
     {We1, BorderEs0} = lists:foldl(Weld, {We0,[]}, FacePairs),
     BorderEs1 = ordsets:from_list(BorderEs0),
 
+    ok = wings_we_util:validate(We1),
     %% Cleanup temp edges (and it's faces)
     {CFs0, We2} = cleanup_temp_edges(TempEs, We1),
     %% dissolve rebuilds we need to update
@@ -339,6 +346,7 @@ weld({Fs01,#we{temp={?MODULE,Es01}}=We01}, TEs01, {Fs02,#we{temp={?MODULE, Es02}
     CFS2 = [Face || Face <- CFS1, wings_face:vertices(Face, We2) > 5],
     We3 = wings_tesselation:quadrangulate(CFS2, We2),
     {_, We4} = cleanup_temp_edges(TempEs, We3),
+    ok = wings_we_util:validate(We3),
 
     %% Calculate border edges and quadrangulate border faces
     Es = wings_util:array_keys(We4#we.es),
@@ -359,9 +367,14 @@ do_weld(Fa, Fb, {We0, Acc}) ->
            end,
     [Vb] = wings_face:fold(Find, [], Fb, We0),
     %% Bridge and collapse new edges
+    ?D("Bridge: ~w (~w) ~w (~w)~n", [Fa, Va, Fb, Vb]),
     We1 = wings_face_cmd:force_bridge(Fa, Va, Fb, Vb, We0),
+    ?PUT(we1,We0),
+    ok = wings_we_util:validate(We1),
     Es = wings_we:new_items_as_ordset(edge, We0, We1),
     We = lists:foldl(fun(E, W) -> wings_collapse:collapse_edge(E, W) end, We1, Es),
+    ?PUT(we1,We),
+    ok = wings_we_util:validate(We),
     %% Find selection
     BorderEdges = wings_face:to_edges([Fa,Fb], We0),
     {We, BorderEdges ++ Acc}.
@@ -946,6 +959,7 @@ build_vtx_loop([V|_Vs], G) ->
             Eds0 = digraph:edges(G),
             Eds1 = [digraph:edge(G,E) || E <- Eds0],
             Eds = lists:keysort(2, lists:keysort(3, Eds1)),
+            %% Crash here often means to few faces in bvh!!
             [io:format("~w~n",[E]) || E <- Eds],
             ?dbg("V ~p => ~p~n",[V,_Acc]),
             ?dbg("Last ~p~n",[_V]),
@@ -955,6 +969,9 @@ build_vtx_loop([V|_Vs], G) ->
 build_vtx_loop(V0, G, Acc) ->
     case [digraph:edge(G, E) || E <- digraph:edges(G, V0)] of
         [] -> {V0, Acc};
+        [_,_,_|_] =Es ->
+            ?D("~p in ~w ~n",[V0, Es]),
+            error(crossing);
         Es ->
             {Edge, Next, Ei} = pick_edge(Es, V0, undefined),
             ?D("~p in ~W => ~p ~n",[V0, Es, 10, Next]),
@@ -969,6 +986,7 @@ edge_exists(G,V1,V2) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 pick_edge([{E,V,V,Ei}|_], V, _Best) ->
+    error(self),
     {E, V, Ei}; %% Self cyclic pick first
 pick_edge([{E,V,N,Ei}|R], V, _Best) ->
     pick_edge(R, V, {E,N,Ei});
