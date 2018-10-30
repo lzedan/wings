@@ -164,7 +164,7 @@ find_intersect(Bvh, Op, {Bvhs0, Merged}) ->
 find_intersect_1(#{bvh:=B1}=Head, [#{bvh:=B2}=H1|Rest], Tested) ->
     case e3d_bvh:intersect(B1, B2) of
 	[] ->  find_intersect_1(Head,Rest,[H1|Tested]);
-	EdgeInfo -> {merge_0(EdgeInfo, Head, H1), Rest ++ Tested}
+	EdgeInfo -> {merge_0(Head, H1, EdgeInfo), Rest ++ Tested}
     end;
 find_intersect_1(_Head, [], _) ->
     none.
@@ -172,18 +172,20 @@ find_intersect_1(_Head, [], _) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-merge_0(EdgeInfo0, I1, I2) ->
+merge_0(I1, I2, EdgeInfo0) ->
     ?D("~p STARTING~n~n",[?FUNCTION_NAME]),
     EdgeInfo = [remap(Edge, I1, I2) || Edge <- EdgeInfo0],
-    ?PUT(we1,maps:get(we,I1)), ?PUT(we2,maps:get(we,I2)),
+    ?PUT(we1,maps:get(we,I1)), ?PUT(we2,maps:get(we,I2)), %% Debug
     case [{MF1,MF2} || {coplanar, MF1, MF2} <- EdgeInfo] of
-        [] -> ?DBG_TRY(merge_1(EdgeInfo, I1, I2), get(we1),get(we2));
+        [] -> ?DBG_TRY(merge_1(I1, I2, EdgeInfo,maps:get(we,I1),maps:get(we,I2)), get(we1),get(we2));
         Coplanar ->
             %% ?D("~p coplanar tesselate and restart ~w ~n",[?FUNCTION_NAME, Coplanar]),
             tesselate_and_restart(Coplanar, I1, I2)
     end.
 
-merge_1(EdgeInfo0, #{we:=We10,el:=EL10,temp_es:=TEs1}=I10, #{we:=We20,el:=EL20, temp_es:=TEs2}=I20) ->
+merge_1(#{we:=We10,el:=EL10,temp_es:=TEs1}=I10,
+        #{we:=We20,el:=EL20, temp_es:=TEs2}=I20,
+        EdgeInfo0, We1, We2) ->
     ?D("~p~n",[?FUNCTION_NAME]),
     {Vmap, EdgeInfo} = make_vmap(EdgeInfo0, We10, We20),  %% Make vertex id => pos and update edges
     %?D("Vmap: ~p~n",[array:to_orddict(Vmap)]),
@@ -198,23 +200,22 @@ merge_1(EdgeInfo0, #{we:=We10,el:=EL10,temp_es:=TEs1}=I10, #{we:=We20,el:=EL20, 
     merge_2(Res,
             maps:merge(I10, maps:update_with(el,fun(EL) -> [EL|EL10] end, I11)),
             maps:merge(I20, maps:update_with(el,fun(EL) -> [EL|EL20] end, I21)),
-            We10,We20).
+            We1,We2).
 
 %% Continuing: multiple edge loops have hit the same face. It was
 %% really hard to handle that in one pass, since faces are split and
 %% moved.  Solved it by doing the intersection test again for the new
 %% faces and start over
-merge_2(cont, #{we:=We11, fs:=Fs1}=I10, #{we:=We21, fs:=Fs2}=I20,
-        We10,We20) ->
+merge_2(cont, #{we:=We11, fs:=Fs1}=I10, #{we:=We21, fs:=Fs2}=I20, We1,We2) ->
     ?D("~p cont~n",[?FUNCTION_NAME]),
-    {We1, Vmap1, Es1, B1} = remake_bvh(Fs1, We10, We11),
-    {We2, Vmap2, Es2, B2} = remake_bvh(Fs2, We20, We21),
+    {We12, Vmap1, Es1, B1} = remake_bvh(Fs1, We1, We11),
+    {We22, Vmap2, Es2, B2} = remake_bvh(Fs2, We2, We21),
     EI0 = e3d_bvh:intersect(B1, B2),
-    I11 = maps:update_with(temp_es,fun(EL) -> gb_sets:union(Es1,EL) end, I10#{we=>We1,map=>Vmap1}),
-    I21 = maps:update_with(temp_es,fun(EL) -> gb_sets:union(Es2,EL) end, I20#{we=>We2,map=>Vmap2}),
+    I11 = maps:update_with(temp_es,fun(EL) -> gb_sets:union(Es1,EL) end, I10#{we=>We12,map=>Vmap1}),
+    I21 = maps:update_with(temp_es,fun(EL) -> gb_sets:union(Es2,EL) end, I20#{we=>We22,map=>Vmap2}),
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
     %% We should crash if we have coplanar faces in this step
-    ?DBG_TRY(merge_1(EI,I11,I21), We1,We2);
+    ?DBG_TRY(merge_1(I11,I21,EI,We1,We2), We12,We22);
     %%#{we=>We1,delete=>none, el=>[], sel_es=>[], error=>We2};
 
 %% All edge loops are in place, dissolve faces inside edge loops and
@@ -264,7 +265,7 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
     I11 = #{we=>We10,map=>Vmap1,el=>[],op=>Op1, temp_es=>gb_sets:empty()},
     I21 = #{we=>We20,map=>Vmap2,el=>[],op=>Op2, temp_es=>gb_sets:empty()},
     EI = [remap(Edge, I11, I21) || Edge <- EI0],
-    merge_1(EI,I11,I21). %% We should crash if we have coplanar faces in this step
+    merge_1(I11,I21,EI,We1,We2). %% We should crash if we have coplanar faces in this step
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 dissolve_faces_in_edgeloops(ELs, Op, #we{fs=Ftab} = We0) ->
