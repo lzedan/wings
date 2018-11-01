@@ -271,77 +271,125 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 dissolve_faces_in_edgeloops(ELs, Op, We0) ->
-    {WeldFs,We1} = loopcut(ELs, Op, We0, []),
-    We = case Op of
-             sub -> wings_we:invert_normals(We1);
-             _ -> We1
-         end,
+    Es = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
+    Parts = wings_edge_cmd:loop_cut_partition(Es, We0),
+    {Inside, Outside} = order_parts(ELs, Parts, We0, []),
+    %% {Keep, Remove} = swap_regions(Op, Inside, Outside),
+    Other = gb_sets:difference(tree_to_set(We0#we.fs), gb_sets:union(Parts)),
+    {WeldFs, We} = dissolve_fs(Op, Inside, Outside, Other, We0),
     _Orig = dissolve_faces_in_edgeloops_old(ELs, Op, We0),
     io:format("WeldFs: ~p  ~w ~w~n",[We0#we.id, WeldFs, element(1, _Orig)]),
-    {WeldFs, We}.
+    {WeldFs, invert_normals(Op, We)}.
 
-loopcut([EL|Els], Op, #we{fs=Ftab} = We0, Fs) ->
-    Inside = faces_in_region([EL], We0),
-    Outside = gb_sets:difference(tree_to_set(Ftab), Inside),
-    {Keep, Remove} = swap_regions(Op, Inside, Outside),
-    We = wings_dissolve:faces(Remove, We0),
-    ?D("~w: ~w~n=> ~w~n", [We0#we.id, gb_sets:to_list(Remove), EL]),
-    ?D("NEXT: ~p => ~p~n",[We0#we.next_id,We#we.next_id]),
-    Invert = fun() -> wings_dissolve:faces(Keep, We0) end,
-    loopcut_cont(Els, Op, Invert, We, [We0#we.next_id|Fs]).
+dissolve_fs(add, [Fs], _, _, We0) ->
+    We = wings_dissolve:faces(Fs, We0),
+    {[We0#we.next_id], We};
+dissolve_fs(isect, [Fs], _, _, We0) ->
+    We = wings_dissolve:complement(Fs, We0),
+    {[We0#we.next_id], We};
+dissolve_fs(sub, [Fs], _, _, We0) ->
+    We = wings_dissolve:complement(Fs, We0),
+    {[We0#we.next_id], We}.
 
-loopcut_cont([], _Op, _, We, WFs) ->
-    {WFs, We};
-loopcut_cont(ELs0, Op, InvWe, #we{es=Etab, fs=Ftab}=We0, WFs) ->
-    Es = wings_util:array_keys(Etab),
-    Fs = gb_trees:keys(Ftab),
-    {Rs0,Rs1} = setup_rootset(0, ELs0, Es, Fs, [], []),
-    case Rs1 of
-        [] -> %% Nothing depends on the deleted faces discard them
-            loopcut(ELs0, Op, We0, WFs);
-        _ ->
-            {We,Rs} = wings_we:merge_root_set([{We0, Rs0}, {InvWe(), Rs1}]),
-            ELs = rootset_to_loops(lists:keysort(3,lists:sort(Rs))),
-            loopcut(ELs, Op, We#we{temp=We0#we.temp}, WFs)
-    end.
+order_parts([{Es, Fs0}|ELs], Parts, We, Acc) ->
+    Fs1 = gb_sets:from_list(Fs0),
+    Fs = case gb_sets:is_empty(Fs1) of
+             true ->
+                 ?D("~w: ~w ~w~n", [We#we.id,Es,Fs0]),
+                 wings_edge:select_region(Es, We);
+             false ->
+                 ?D("~w: ~w ~w~n", [We#we.id,lists:sort(Es),lists:sort(Fs0)]),
+                 %% EsS = gb_sets:from_list(Es),
+                 %% wings_edge:reachable_faces(Fs1, EsS, We)
+                 Fs1
+         end,
+    try pick_parts(Fs, Parts, []) of
+        {none, Rest} ->
+            order_parts(ELs, Rest, We, Acc);
+        {Part, Rest} ->
+            order_parts(ELs, Rest, We, [Part|Acc])
+    catch error:_ ->
+            ?D("~w ~n",[gb_sets:to_list(Fs)]),
+            [io:format(": ~w~n",[gb_sets:to_list(A)]) || A <- Parts],
+            [io:format("- ~w~n",[gb_sets:to_list(A)]) || A <- Acc],
+            error(mismatch_parts)
+    end;
+order_parts([], Parts, _, Acc) ->
+    {Acc, Parts}.
 
-swap_regions(add, Inside, OutSide) -> {OutSide, Inside};
-swap_regions(_, Inside, OutSide) -> {Inside, OutSide}.
+pick_parts(Fs, [Part|Ps], Acc) ->
+    case gb_sets:is_empty(gb_sets:difference(Fs, Part)) of
+        true -> {Part, Acc ++ Ps};
+        false -> pick_parts(Fs, Ps, [Part|Acc])
+    end;
+pick_parts(_Fs, [], Acc) ->
+    {none, Acc}.
 
-setup_rootset(Label, [{Es0,Fs0}|Els], Etab, Ftab, Rs0, Rs1) ->
-    Es = ordsets:from_list(Es0),
-    Fs = ordsets:from_list(Fs0),
-    R0E = {edge, ordsets:intersection(Es, Etab), Label},
-    R0F = {face, ordsets:intersection(Fs, Ftab), Label},
-    R1E = {edge, ordsets:subtract(Es, Etab), Label},
-    R1F = {face, ordsets:subtract(Fs, Ftab), Label},
-    setup_rootset(Label+1, Els, Etab, Ftab, [R0E,R0F|Rs0], [R1E,R1F|Rs1]);
-setup_rootset(_, [], _, _, Rs0, Rs1) ->
-    %% Drop empty lists
-    {[Rs || {_, [_|_], _} = Rs <- Rs0],[Rs || {_, [_|_], _} = Rs <- Rs1]}.
+invert_normals(sub, We) -> wings_we:invert_normals(We);
+invert_normals(_, We) -> We.
 
--define(ASSERT_RTL, case Rest of [] -> ok; [{_,_,I}|_] when I > N -> ok;
-                        _ -> error({?MODULE,?LINE}) end).
+%% swap_regions(add, Inside, OutSide) -> {OutSide, Inside};
+%% swap_regions(_, Inside, OutSide) -> {Inside, OutSide}.
 
-rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
-    [{Es0++Es1,Fs0++Fs1}|rootset_to_loops(Rest)];
-rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N}|Rest]) ->
-    ?ASSERT_RTL,
-    [{Es0++Es1,Fs0}|rootset_to_loops(Rest)];
-rootset_to_loops([{edge,Es0,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
-    ?ASSERT_RTL,
-    [{Es0,Fs0++Fs1}|rootset_to_loops(Rest)];
-rootset_to_loops([{edge,Es0,N},{face,Fs0,N}|Rest]) ->
-    ?ASSERT_RTL,
-    [{Es0,Fs0}|rootset_to_loops(Rest)];
-rootset_to_loops([{edge,Es0,N}|Rest]) ->
-    ?ASSERT_RTL,
-    [{Es0,[]}|rootset_to_loops(Rest)];
-%% rootset_to_loops([{face,Fs0,N}|[{_,_,I}|_]=Rest])  %% Should never happen
-%%   when I > N ->
-%%     [{[],Fs0}|rootset_to_loops(Rest)];
-rootset_to_loops([]) ->
-    [].
+%% loopcut([EL|Els], Op, #we{fs=Ftab} = We0, Fs) ->
+%%     Inside = faces_in_region([EL], We0),
+%%     Outside = gb_sets:difference(tree_to_set(Ftab), Inside),
+%%     {Keep, Remove} = swap_regions(Op, Inside, Outside),
+%%     We = wings_dissolve:faces(Remove, We0),
+%%     ?D("~w: ~w~n=> ~w~n", [We0#we.id, gb_sets:to_list(Remove), EL]),
+%%     ?D("NEXT: ~p => ~p~n",[We0#we.next_id,We#we.next_id]),
+%%     Invert = fun() -> wings_dissolve:faces(Keep, We0) end,
+%%     loopcut_cont(Els, Op, Invert, We, [We0#we.next_id|Fs]).
+
+%% loopcut_cont([], _Op, _, We, WFs) ->
+%%     {WFs, We};
+%% loopcut_cont(ELs0, Op, InvWe, #we{es=Etab, fs=Ftab}=We0, WFs) ->
+%%     Es = wings_util:array_keys(Etab),
+%%     Fs = gb_trees:keys(Ftab),
+%%     {Rs0,Rs1} = setup_rootset(0, ELs0, Es, Fs, [], []),
+%%     case Rs1 of
+%%         [] -> %% Nothing depends on the deleted faces discard them
+%%             loopcut(ELs0, Op, We0, WFs);
+%%         _ ->
+%%             {We,Rs} = wings_we:merge_root_set([{We0, Rs0}, {InvWe(), Rs1}]),
+%%             ELs = rootset_to_loops(lists:keysort(3,lists:sort(Rs))),
+%%             loopcut(ELs, Op, We#we{temp=We0#we.temp}, WFs)
+%%     end.
+
+%% setup_rootset(Label, [{Es0,Fs0}|Els], Etab, Ftab, Rs0, Rs1) ->
+%%     Es = ordsets:from_list(Es0),
+%%     Fs = ordsets:from_list(Fs0),
+%%     R0E = {edge, ordsets:intersection(Es, Etab), Label},
+%%     R0F = {face, ordsets:intersection(Fs, Ftab), Label},
+%%     R1E = {edge, ordsets:subtract(Es, Etab), Label},
+%%     R1F = {face, ordsets:subtract(Fs, Ftab), Label},
+%%     setup_rootset(Label+1, Els, Etab, Ftab, [R0E,R0F|Rs0], [R1E,R1F|Rs1]);
+%% setup_rootset(_, [], _, _, Rs0, Rs1) ->
+%%     %% Drop empty lists
+%%     {[Rs || {_, [_|_], _} = Rs <- Rs0],[Rs || {_, [_|_], _} = Rs <- Rs1]}.
+
+%% -define(ASSERT_RTL, case Rest of [] -> ok; [{_,_,I}|_] when I > N -> ok;
+%%                         _ -> error({?MODULE,?LINE}) end).
+
+%% rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
+%%     [{Es0++Es1,Fs0++Fs1}|rootset_to_loops(Rest)];
+%% rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N}|Rest]) ->
+%%     ?ASSERT_RTL,
+%%     [{Es0++Es1,Fs0}|rootset_to_loops(Rest)];
+%% rootset_to_loops([{edge,Es0,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
+%%     ?ASSERT_RTL,
+%%     [{Es0,Fs0++Fs1}|rootset_to_loops(Rest)];
+%% rootset_to_loops([{edge,Es0,N},{face,Fs0,N}|Rest]) ->
+%%     ?ASSERT_RTL,
+%%     [{Es0,Fs0}|rootset_to_loops(Rest)];
+%% rootset_to_loops([{edge,Es0,N}|Rest]) ->
+%%     ?ASSERT_RTL,
+%%     [{Es0,[]}|rootset_to_loops(Rest)];
+%% %% rootset_to_loops([{face,Fs0,N}|[{_,_,I}|_]=Rest])  %% Should never happen
+%% %%   when I > N ->
+%% %%     [{[],Fs0}|rootset_to_loops(Rest)];
+%% rootset_to_loops([]) ->
+%%     [].
 
 %% Old stuff
 dissolve_faces_in_edgeloops_old(ELs, Op, We0) ->
