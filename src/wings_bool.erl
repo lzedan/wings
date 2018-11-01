@@ -269,16 +269,89 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
     merge_1(I11,I21,EI,We1,We2). %% We should crash if we have coplanar faces in this step
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-dissolve_faces_in_edgeloops(ELs, Op, #we{fs=Ftab} = We0) ->
-    Fs0 = faces_in_region(ELs, We0),
+
+dissolve_faces_in_edgeloops(ELs, Op, We0) ->
+    {WeldFs,We1} = loopcut(ELs, Op, We0, []),
     We = case Op of
-             add -> wings_dissolve:faces(Fs0, We0);
+             sub -> wings_we:invert_normals(We1);
+             _ -> We1
+         end,
+    _Orig = dissolve_faces_in_edgeloops_old(ELs, Op, We0),
+    io:format("WeldFs: ~p  ~w ~w~n",[We0#we.id, WeldFs, element(1, _Orig)]),
+    {WeldFs, We}.
+
+loopcut([EL|Els], Op, #we{fs=Ftab} = We0, Fs) ->
+    Inside = faces_in_region([EL], We0),
+    Outside = gb_sets:difference(tree_to_set(Ftab), Inside),
+    {Keep, Remove} = swap_regions(Op, Inside, Outside),
+    We = wings_dissolve:faces(Remove, We0),
+    ?D("~w: ~w~n=> ~w~n", [We0#we.id, gb_sets:to_list(Remove), EL]),
+    ?D("NEXT: ~p => ~p~n",[We0#we.next_id,We#we.next_id]),
+    Invert = fun() -> wings_dissolve:faces(Keep, We0) end,
+    loopcut_cont(Els, Op, Invert, We, [We0#we.next_id|Fs]).
+
+loopcut_cont([], _Op, _, We, WFs) ->
+    {WFs, We};
+loopcut_cont(ELs0, Op, InvWe, #we{es=Etab, fs=Ftab}=We0, WFs) ->
+    Es = wings_util:array_keys(Etab),
+    Fs = gb_trees:keys(Ftab),
+    {Rs0,Rs1} = setup_rootset(0, ELs0, Es, Fs, [], []),
+    case Rs1 of
+        [] -> %% Nothing depends on the deleted faces discard them
+            loopcut(ELs0, Op, We0, WFs);
+        _ ->
+            {We,Rs} = wings_we:merge_root_set([{We0, Rs0}, {InvWe(), Rs1}]),
+            ELs = rootset_to_loops(lists:keysort(3,lists:sort(Rs))),
+            loopcut(ELs, Op, We#we{temp=We0#we.temp}, WFs)
+    end.
+
+swap_regions(add, Inside, OutSide) -> {OutSide, Inside};
+swap_regions(_, Inside, OutSide) -> {Inside, OutSide}.
+
+setup_rootset(Label, [{Es0,Fs0}|Els], Etab, Ftab, Rs0, Rs1) ->
+    Es = ordsets:from_list(Es0),
+    Fs = ordsets:from_list(Fs0),
+    R0E = {edge, ordsets:intersection(Es, Etab), Label},
+    R0F = {face, ordsets:intersection(Fs, Ftab), Label},
+    R1E = {edge, ordsets:subtract(Es, Etab), Label},
+    R1F = {face, ordsets:subtract(Fs, Ftab), Label},
+    setup_rootset(Label+1, Els, Etab, Ftab, [R0E,R0F|Rs0], [R1E,R1F|Rs1]);
+setup_rootset(_, [], _, _, Rs0, Rs1) ->
+    %% Drop empty lists
+    {[Rs || {_, [_|_], _} = Rs <- Rs0],[Rs || {_, [_|_], _} = Rs <- Rs1]}.
+
+-define(ASSERT_RTL, case Rest of [] -> ok; [{_,_,I}|_] when I > N -> ok;
+                        _ -> error({?MODULE,?LINE}) end).
+
+rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
+    [{Es0++Es1,Fs0++Fs1}|rootset_to_loops(Rest)];
+rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N}|Rest]) ->
+    ?ASSERT_RTL,
+    [{Es0++Es1,Fs0}|rootset_to_loops(Rest)];
+rootset_to_loops([{edge,Es0,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
+    ?ASSERT_RTL,
+    [{Es0,Fs0++Fs1}|rootset_to_loops(Rest)];
+rootset_to_loops([{edge,Es0,N},{face,Fs0,N}|Rest]) ->
+    ?ASSERT_RTL,
+    [{Es0,Fs0}|rootset_to_loops(Rest)];
+rootset_to_loops([{edge,Es0,N}|Rest]) ->
+    ?ASSERT_RTL,
+    [{Es0,[]}|rootset_to_loops(Rest)];
+%% rootset_to_loops([{face,Fs0,N}|[{_,_,I}|_]=Rest])  %% Should never happen
+%%   when I > N ->
+%%     [{[],Fs0}|rootset_to_loops(Rest)];
+rootset_to_loops([]) ->
+    [].
+
+%% Old stuff
+dissolve_faces_in_edgeloops_old(ELs, Op, We0) ->
+    Fs = faces_in_region(ELs, We0),
+    We = case Op of
+             add -> wings_dissolve:faces(Fs, We0);
              isect ->
-                 Fs = gb_sets:difference(gb_sets:from_ordset(gb_trees:keys(Ftab)), Fs0),
-                 wings_dissolve:faces(Fs, We0);
+                 wings_dissolve:complement(Fs, We0);
              sub ->
-                 Fs = gb_sets:difference(gb_sets:from_ordset(gb_trees:keys(Ftab)), Fs0),
-                 We1 = wings_dissolve:faces(Fs, We0),
+                 We1 = wings_dissolve:complement(Fs, We0),
                  wings_we:invert_normals(We1)
          end,
     Faces = wings_we:new_items_as_ordset(face, We0, We),
@@ -293,13 +366,12 @@ order_loops(Fs, ELs0, We) ->
     CFs = [{proplists:get_value(Edge, OrderEs), Face} || {Edge, Face} <- CFs0],
     [Face || {_, Face} <- lists:sort(CFs)].
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% wings_edge:select_region() does not work as I want with several loops
 %% we know the faces though.
 faces_in_region(ELs, #we{fs=All}=We) ->
     Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
     Fs0 = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
-    Fs  = gb_sets:intersection(gb_sets:from_ordset(gb_trees:keys(All)), Fs0),
+    Fs  = gb_sets:intersection(tree_to_set(All), Fs0),
     R = case gb_sets:is_empty(Fs) of
             true -> wings_edge:select_region(Es, We);
             false -> wings_edge:reachable_faces(Fs, Es, We)
@@ -308,6 +380,7 @@ faces_in_region(ELs, #we{fs=All}=We) ->
     %%    [We#we.id,gb_sets:to_list(Fs),gb_sets:to_list(Es), gb_sets:to_list(R)]),
     R.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% Weld
 %% Merge the two We's and bridge corresponding face-pairs
@@ -429,8 +502,8 @@ make_verts([], _, Fs10, We1, _, Fs20, We2, TEs1, TEs2, Acc, Cont) ->
 			   gb_sets:union(gb_sets:from_list([F || #{f:=F} <- L2]),F2)}
 		  end,
 	    {Fs11,Fs21} = lists:foldl(Add, {Fs10,Fs20}, Cont),
-            Fs1 = gb_sets:intersection(Fs11, gb_sets:from_ordset(gb_trees:keys(We1#we.fs))),
-            Fs2 = gb_sets:intersection(Fs21, gb_sets:from_ordset(gb_trees:keys(We2#we.fs))),
+            Fs1 = gb_sets:intersection(Fs11, tree_to_set(We1#we.fs)),
+            Fs2 = gb_sets:intersection(Fs21, tree_to_set(We2#we.fs)),
             {cont, I1#{fs=>Fs1}, I2#{fs=>Fs2}}
     end.
 
@@ -1199,3 +1272,5 @@ tesselate_faces(Fs, We0) ->
             end,
     lists:foldl(TessN, We1, Ngons).
 
+tree_to_set(GbTree) ->
+    gb_sets:from_ordset(gb_trees:keys(GbTree)).
