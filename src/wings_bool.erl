@@ -225,15 +225,15 @@ merge_2(done,
         #{we:=We2, el:=EL2, op:=Op2, temp_es:=TEs2},
         #we{id=Id1}, #we{id=Id2}) ->
     ?D("~p ~p ~p done~n",[?FUNCTION_NAME, We1#we.id, We2#we.id]),
-    DRes1 = dissolve_faces_in_edgeloops(lists:append(EL1), Op1, We1),
-    DRes2 = dissolve_faces_in_edgeloops(lists:append(EL2), Op2, We2),
+    DRes1 = dissolve_faces_in_edgeloops(lists:append(EL1), Op1, TEs1, We1),
+    DRes2 = dissolve_faces_in_edgeloops(lists:append(EL2), Op2, TEs2, We2),
     Weld = fun() ->
-                   {We,Es} = weld(DRes1, gb_sets:to_list(TEs1), DRes2, gb_sets:to_list(TEs2)),
+                   {We,Es} = weld(DRes1, DRes2),
                    [Del] = lists:delete(We#we.id, [Id1,Id2]),
                    ok = wings_we_util:validate(We),
                    #{sel_es=>Es, we=>We, delete=>Del}
            end,
-    ?DBG_TRY(Weld(), element(2, DRes1), element(2, DRes2)).
+    ?DBG_TRY(Weld(), element(3, DRes1), element(3, DRes2)).
     %% ?DBG_TRY(Weld(), get(we1), get(we2)).
     %% #{we=>We1, delete=>none, sel_es=>gb_sets:to_list(TEs1),
     %%   error=>We2, dummy=>{DRes1, DRes2, catch Weld()}}.
@@ -270,169 +270,172 @@ tesselate_and_restart(Coplanar, #{we:=#we{id=Id1}=We1, op:=Op1},
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-dissolve_faces_in_edgeloops(ELs, Op, We0) ->
-    Es = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
+dissolve_faces_in_edgeloops(EFLs, Op, TEs0, #we{temp=PrevSel}=We0) ->
+    Es = gb_sets:from_list([E || {Es,_} <- EFLs, E <- Es]),
     Parts = wings_edge_cmd:loop_cut_partition(Es, We0),
-    {Inside, Outside} = order_parts(ELs, Parts, We0, []),
-    %% {Keep, Remove} = swap_regions(Op, Inside, Outside),
+    {Inside, Outside} = partion_parts(EFLs, Parts, We0),
     Other = gb_sets:difference(tree_to_set(We0#we.fs), gb_sets:union(Parts)),
-    {WeldFs, We} = dissolve_fs(Op, Inside, Outside, Other, We0),
-    _Orig = dissolve_faces_in_edgeloops_old(ELs, Op, We0),
-    io:format("WeldFs: ~p  ~w ~w~n",[We0#we.id, WeldFs, element(1, _Orig)]),
-    {WeldFs, invert_normals(Op, We)}.
+    ELs = [lists:sort(EL) || {EL,_} <- EFLs],
+    Wes = dissolve_fs(Op, Inside, Outside, Other, We0, ELs),
+    {WeldFs, TEs, We} = merge_wes(Wes, gb_sets:to_list(TEs0)),
+    %% _Orig = dissolve_faces_in_edgeloops_old(ELs, Op, We0),
+    io:format("WeldFs: ~p  ~w~n",[We0#we.id, WeldFs]),
+    {WeldFs, TEs, invert_normals(Op, We#we{temp=PrevSel})}.
 
-dissolve_fs(add, [Fs], _, _, We0) ->
-    We = wings_dissolve:faces(Fs, We0),
-    {[We0#we.next_id], We};
-dissolve_fs(isect, [Fs], _, _, We0) ->
-    We = wings_dissolve:complement(Fs, We0),
-    {[We0#we.next_id], We};
-dissolve_fs(sub, [Fs], _, _, We0) ->
-    We = wings_dissolve:complement(Fs, We0),
-    {[We0#we.next_id], We}.
+dissolve_fs(add, _, [First|KP], Other, We0, ELs) ->
+    Keep = gb_sets:union(First, Other),
+    Diss = fun(Set, Acc) ->
+                   We = wings_dissolve:complement(gb_sets:to_list(Set), We0),
+                   Fs0 = wings_we:new_items_as_ordset(face, We0, We),
+                   Faces = order_loops(Fs0, ELs, We),
+                   [{Faces,We}|Acc]
+           end,
+    lists:reverse(lists:foldl(Diss, [], [Keep|KP]));
+dissolve_fs(_, KP, _, _, We0, ELs) ->
+    Diss = fun(Set, Acc) ->
+                   We = wings_dissolve:complement(gb_sets:to_list(Set), We0),
+                   Fs0 = wings_we:new_items_as_ordset(face, We0, We),
+                   Faces = order_loops(Fs0, ELs, We),
+                   [{Faces,We}|Acc]
+           end,
+    lists:reverse(lists:foldl(Diss, [], KP)).
 
-order_parts([{Es, Fs0}|ELs], Parts, We, Acc) ->
-    Fs1 = gb_sets:from_list(Fs0),
-    Fs = case gb_sets:is_empty(Fs1) of
-             true ->
-                 ?D("~w: ~w ~w~n", [We#we.id,Es,Fs0]),
-                 wings_edge:select_region(Es, We);
-             false ->
-                 ?D("~w: ~w ~w~n", [We#we.id,lists:sort(Es),lists:sort(Fs0)]),
-                 %% EsS = gb_sets:from_list(Es),
-                 %% wings_edge:reachable_faces(Fs1, EsS, We)
-                 Fs1
-         end,
-    try pick_parts(Fs, Parts, []) of
-        {none, Rest} ->
-            order_parts(ELs, Rest, We, Acc);
-        {Part, Rest} ->
-            order_parts(ELs, Rest, We, [Part|Acc])
-    catch error:_ ->
-            ?D("~w ~n",[gb_sets:to_list(Fs)]),
-            [io:format(": ~w~n",[gb_sets:to_list(A)]) || A <- Parts],
-            [io:format("- ~w~n",[gb_sets:to_list(A)]) || A <- Acc],
-            error(mismatch_parts)
-    end;
-order_parts([], Parts, _, Acc) ->
-    {Acc, Parts}.
-
-pick_parts(Fs, [Part|Ps], Acc) ->
-    case gb_sets:is_empty(gb_sets:difference(Fs, Part)) of
-        true -> {Part, Acc ++ Ps};
-        false -> pick_parts(Fs, Ps, [Part|Acc])
-    end;
-pick_parts(_Fs, [], Acc) ->
-    {none, Acc}.
+merge_wes([{Fs,We}], TEs) ->
+    {Fs, TEs, We};
+merge_wes(Wes, TEs0) ->
+    %% Order of faces is important here
+    MakeRoot = fun({Fs,#we{es=Etab}=We}, N) ->
+                       Es = ordsets:intersection(TEs0, wings_util:array_keys(Etab)),
+                       {{We,[{face,Fs,N}, {edge,Es,temp}]}, N+1}
+               end,
+    {WithRs,_} = lists:mapfoldl(MakeRoot, 0, Wes),
+    {We,Rs} = wings_we:merge_root_set(WithRs),
+    Faces = [Face || {face,Fs,_} <- lists:keysort(3,Rs), Face <- Fs],
+    TEs = [Edge || {edge,Es,temp} <- Rs, Edge <- Es],
+    {Faces,TEs,We}.
 
 invert_normals(sub, We) -> wings_we:invert_normals(We);
 invert_normals(_, We) -> We.
 
-%% swap_regions(add, Inside, OutSide) -> {OutSide, Inside};
-%% swap_regions(_, Inside, OutSide) -> {Inside, OutSide}.
 
-%% loopcut([EL|Els], Op, #we{fs=Ftab} = We0, Fs) ->
-%%     Inside = faces_in_region([EL], We0),
-%%     Outside = gb_sets:difference(tree_to_set(Ftab), Inside),
-%%     {Keep, Remove} = swap_regions(Op, Inside, Outside),
-%%     We = wings_dissolve:faces(Remove, We0),
-%%     ?D("~w: ~w~n=> ~w~n", [We0#we.id, gb_sets:to_list(Remove), EL]),
-%%     ?D("NEXT: ~p => ~p~n",[We0#we.next_id,We#we.next_id]),
-%%     Invert = fun() -> wings_dissolve:faces(Keep, We0) end,
-%%     loopcut_cont(Els, Op, Invert, We, [We0#we.next_id|Fs]).
+partion_parts(ELs, Parts, We0) ->
+    ?D("Searching: ~n",[]),
+    [io:format(" ~w~n",[gb_sets:to_list(P)]) || P <- Parts],
+    partion_parts(ELs, Parts, We0, []).
 
-%% loopcut_cont([], _Op, _, We, WFs) ->
-%%     {WFs, We};
-%% loopcut_cont(ELs0, Op, InvWe, #we{es=Etab, fs=Ftab}=We0, WFs) ->
-%%     Es = wings_util:array_keys(Etab),
-%%     Fs = gb_trees:keys(Ftab),
-%%     {Rs0,Rs1} = setup_rootset(0, ELs0, Es, Fs, [], []),
-%%     case Rs1 of
-%%         [] -> %% Nothing depends on the deleted faces discard them
-%%             loopcut(ELs0, Op, We0, WFs);
-%%         _ ->
-%%             {We,Rs} = wings_we:merge_root_set([{We0, Rs0}, {InvWe(), Rs1}]),
-%%             ELs = rootset_to_loops(lists:keysort(3,lists:sort(Rs))),
-%%             loopcut(ELs, Op, We#we{temp=We0#we.temp}, WFs)
-%%     end.
+partion_parts([{Es0, Fs0}|ELs], Parts0, We, Inside) ->
+    InF = case Fs0 of
+              [F|_] -> F;
+              [] ->
+                  Es = ordsets:from_list(Es0),
+                  hd(gb_sets:to_list(wings_edge:select_region(Es, We)))
+          end,
+    ?D("Pick in:~w~n",[InF]),
+    %% {In, Out, Rest} = pick_part(Parts, InF, OutF, Inside, Outside, []),
+    case take(fun(Part) -> gb_sets:is_member(InF, Part) end, Parts0) of
+        not_found -> partion_parts(ELs, Parts0, We, Inside);
+        {Part, Parts} -> partion_parts(ELs, Parts, We, [Part|Inside])
+    end;
+partion_parts([], Parts, _We, In) ->
+    {In, Parts}.
 
-%% setup_rootset(Label, [{Es0,Fs0}|Els], Etab, Ftab, Rs0, Rs1) ->
+%% order_parts(ELs, Parts, We0) ->
+%%     ?D("Searching: ~n",[]),
+%%     [io:format(" ~w~n",[gb_sets:to_list(P)]) || P <- Parts],
+%%     order_parts(ELs, Parts, We0, [], []).
+
+%% order_parts([{Es0, Fs0}|ELs], Parts0, #we{es=Etab}=We, Inside0, Outside0) ->
 %%     Es = ordsets:from_list(Es0),
-%%     Fs = ordsets:from_list(Fs0),
-%%     R0E = {edge, ordsets:intersection(Es, Etab), Label},
-%%     R0F = {face, ordsets:intersection(Fs, Ftab), Label},
-%%     R1E = {edge, ordsets:subtract(Es, Etab), Label},
-%%     R1F = {face, ordsets:subtract(Fs, Ftab), Label},
-%%     setup_rootset(Label+1, Els, Etab, Ftab, [R0E,R0F|Rs0], [R1E,R1F|Rs1]);
-%% setup_rootset(_, [], _, _, Rs0, Rs1) ->
-%%     %% Drop empty lists
-%%     {[Rs || {_, [_|_], _} = Rs <- Rs0],[Rs || {_, [_|_], _} = Rs <- Rs1]}.
+%%     InF = case Fs0 of
+%%               [F|_] -> F;
+%%               [] -> hd(gb_sets:to_list(wings_edge:select_region(Es, We)))
+%%           end,
+%%     FEs = wings_face:to_edges([InF], We),
+%%     [Edge|_] = ordsets:intersection(Es, ordsets:from_list(FEs)),
+%%     OutF = wings_face:other(InF, array:get(Edge,Etab)),
+%%     ?D("Pick in:~w out:~w~n",[InF,OutF]),
+%%     %% {In, Out, Rest} = pick_part(Parts, InF, OutF, Inside, Outside, []),
+%%     Find = fun(Face) -> fun(Part) -> not gb_sets:is_member(Face, Part) end end,
+%%     {Parts1, Inside} =
+%%         case lists:dropwhile(Find(InF), Parts0) of
+%%             [In|_] -> {lists:delete(In,Parts0), [In|Inside0]};
+%%             [] -> {Parts0, Inside0}
+%%         end,
+%%     {Parts, Outside} =
+%%         case lists:dropwhile(Find(OutF), Parts1) of
+%%             [Out|_] -> {lists:delete(Out,Parts1), [Out|Outside0]};
+%%             [] -> {Parts1, Outside0}
+%%         end,
+%%     order_parts(ELs, Parts, We, Inside, Outside);
+%% order_parts([], _Parts, _We, In, Out) ->
+%%     ?D("Unused parts:~n",[]),
+%%     [io:format(" ~w~n",[gb_sets:to_list(P)]) || P <- _Parts],
+%%     ?D("In: ~n",[]),
+%%     [io:format(" ~w~n",[gb_sets:to_list(P)]) || P <- In],
+%%     ?D("Out: ~n",[]),
+%%     [io:format(" ~w~n",[gb_sets:to_list(P)]) || P <- Out],
+%%     [] = _Parts,
+%%     {In,Out}.
 
-%% -define(ASSERT_RTL, case Rest of [] -> ok; [{_,_,I}|_] when I > N -> ok;
-%%                         _ -> error({?MODULE,?LINE}) end).
+%% pick_part([Part|Ps], InF, OutF, Inside, Outside, Acc) ->
+%%     case gb_sets:is_member(InF, Part) of
+%%         true ->
+%%             pick_part(Ps, InF, OutF, [Part|Inside], Outside, Acc);
+%%         false ->
+%%             case gb_sets:is_member(OutF, Part) of
+%%                 true ->
+%%                     pick_part(Ps, InF, OutF, Inside, [Part|Outside], Acc);
+%%                 false ->
+%%                     pick_part(Ps, InF, OutF, Inside, Outside, [Part|Acc])
+%%             end
+%%     end;
+%% pick_part([], _, _, In, Out, Acc) ->
+%%     {In, Out, Acc}.
 
-%% rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
-%%     [{Es0++Es1,Fs0++Fs1}|rootset_to_loops(Rest)];
-%% rootset_to_loops([{edge,Es0,N},{edge,Es1,N},{face,Fs0,N}|Rest]) ->
-%%     ?ASSERT_RTL,
-%%     [{Es0++Es1,Fs0}|rootset_to_loops(Rest)];
-%% rootset_to_loops([{edge,Es0,N},{face,Fs0,N},{face,Fs1,N}|Rest]) ->
-%%     ?ASSERT_RTL,
-%%     [{Es0,Fs0++Fs1}|rootset_to_loops(Rest)];
-%% rootset_to_loops([{edge,Es0,N},{face,Fs0,N}|Rest]) ->
-%%     ?ASSERT_RTL,
-%%     [{Es0,Fs0}|rootset_to_loops(Rest)];
-%% rootset_to_loops([{edge,Es0,N}|Rest]) ->
-%%     ?ASSERT_RTL,
-%%     [{Es0,[]}|rootset_to_loops(Rest)];
-%% %% rootset_to_loops([{face,Fs0,N}|[{_,_,I}|_]=Rest])  %% Should never happen
-%% %%   when I > N ->
-%% %%     [{[],Fs0}|rootset_to_loops(Rest)];
-%% rootset_to_loops([]) ->
-%%     [].
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% Old stuff
-dissolve_faces_in_edgeloops_old(ELs, Op, We0) ->
-    Fs = faces_in_region(ELs, We0),
-    We = case Op of
-             add -> wings_dissolve:faces(Fs, We0);
-             isect ->
-                 wings_dissolve:complement(Fs, We0);
-             sub ->
-                 We1 = wings_dissolve:complement(Fs, We0),
-                 wings_we:invert_normals(We1)
-         end,
-    Faces = wings_we:new_items_as_ordset(face, We0, We),
-    {order_loops(Faces, ELs, We),We}.
+%% %% Old stuff
+%% dissolve_faces_in_edgeloops_old(ELs, Op, We0) ->
+%%     Fs = faces_in_region(ELs, We0),
+%%     We = case Op of
+%%              add -> wings_dissolve:faces(Fs, We0);
+%%              isect ->
+%%                  wings_dissolve:complement(Fs, We0);
+%%              sub ->
+%%                  We1 = wings_dissolve:complement(Fs, We0),
+%%                  wings_we:invert_normals(We1)
+%%          end,
+%%     Faces = wings_we:new_items_as_ordset(face, We0, We),
+%%     {order_loops(Faces, ELs, We),We}.
 
 order_loops([_]=Face, _ELs, _We) ->
     Face;
 order_loops(Fs, ELs0, We) ->
     {OrderEs,_} = lists:mapfoldl(fun(Edge, N) -> {{Edge,N},N+1} end,
-                                 0, [hd(lists:sort(EL)) || {EL,_} <- ELs0]),
+                                 0, [hd(EL) || EL <- ELs0]),
     CFs0 = [{hd(lists:sort(wings_face:to_edges([Face],We))), Face} || Face <- Fs],
     CFs = [{proplists:get_value(Edge, OrderEs), Face} || {Edge, Face} <- CFs0],
     [Face || {_, Face} <- lists:sort(CFs)].
 
-%% wings_edge:select_region() does not work as I want with several loops
-%% we know the faces though.
-faces_in_region(ELs, #we{fs=All}=We) ->
-    Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
-    Fs0 = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
-    Fs  = gb_sets:intersection(tree_to_set(All), Fs0),
-    R = case gb_sets:is_empty(Fs) of
-            true -> wings_edge:select_region(Es, We);
-            false -> wings_edge:reachable_faces(Fs, Es, We)
-        end,
-    %% ?D("~w: ~w Es: ~w~n\t => ~w~n",
-    %%    [We#we.id,gb_sets:to_list(Fs),gb_sets:to_list(Es), gb_sets:to_list(R)]),
-    R.
+%% %% wings_edge:select_region() does not work as I want with several loops
+%% %% we know the faces though.
+%% faces_in_region(ELs, #we{fs=All}=We) ->
+%%     Es  = gb_sets:from_list([E || {Es,_} <- ELs, E <- Es]),
+%%     Fs0 = gb_sets:from_list([F || {_,Fs} <- ELs, F <- Fs]),
+%%     Fs  = gb_sets:intersection(tree_to_set(All), Fs0),
+%%     R = case gb_sets:is_empty(Fs) of
+%%             true -> wings_edge:select_region(Es, We);
+%%             false -> wings_edge:reachable_faces(Fs, Es, We)
+%%         end,
+%%     %% ?D("~w: ~w Es: ~w~n\t => ~w~n",
+%%     %%    [We#we.id,gb_sets:to_list(Fs),gb_sets:to_list(Es), gb_sets:to_list(R)]),
+%%     R.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% Weld
 %% Merge the two We's and bridge corresponding face-pairs
-weld({Fs01,#we{temp={?MODULE,Es01}}=We01}, TEs01, {Fs02,#we{temp={?MODULE, Es02}}=We02}, TEs02) ->
+weld({Fs01,TEs01,#we{temp={?MODULE,Es01}}=We01}, {Fs02,TEs02,#we{temp={?MODULE, Es02}}=We02}) ->
     TEs1 = ordsets:intersection(TEs01, wings_util:array_keys(We01#we.es)),
     TEs2 = ordsets:intersection(TEs02, wings_util:array_keys(We02#we.es)),
     WeRs = [{We01, [{face,Fs01,weld}, {edge,Es01,border}, {edge,TEs1,temp}]},
@@ -1320,5 +1323,20 @@ tesselate_faces(Fs, We0) ->
             end,
     lists:foldl(TessN, We1, Ngons).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% UTILS:
+
 tree_to_set(GbTree) ->
     gb_sets:from_ordset(gb_trees:keys(GbTree)).
+
+take(Fun, List) ->
+    take(Fun, List, []).
+take(Fun, [F|R], Acc) ->
+    case Fun(F) of
+        true ->
+            {F, lists:reverse(Acc, R)};
+        false ->
+            take(Fun, R, [F|Acc])
+    end;
+take(_Fun, _, _Acc) ->
+    not_found.
