@@ -611,7 +611,7 @@ connect_verts_1(WeV1, WeV2, Keep, Face, CrossDir, #we{vp=Vtab, es=Etab}=We) ->
             Dir = e3d_vec:cross(N,e3d_vec:norm_sub(V1,V2)),
             %% ?D("Swap: ~.3f (~s) ~n", [e3d_vec:dot(CrossDir, Dir), e3d_vec:format(Dir)]),
             Inside = 0 >= e3d_vec:dot(CrossDir, Dir),
-            case Inside of
+            case (Inside andalso Keep) orelse not Keep of
                 true  -> {wings_vertex:force_connect(WeV1,WeV2,Face,We), Face};
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), Face}
             end;
@@ -619,7 +619,7 @@ connect_verts_1(WeV1, WeV2, Keep, Face, CrossDir, #we{vp=Vtab, es=Etab}=We) ->
             C = wings_face:center(Face, We),
             Dir = e3d_vec:norm_sub(C,e3d_vec:average(V1,V2)),
             Inside = 0 >= e3d_vec:dot(CrossDir, Dir),
-            case Inside andalso Keep of
+            case (Inside andalso Keep) orelse not Keep of
                 true ->
                     ?D("Add1 ~w: ~w ~w~n",[We#we.id, Keep, Face]),
                     {{We, Edge}, Face};
@@ -692,11 +692,11 @@ half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], 
     catch _:{badmatch,false} ->
             #we{es=Etab}=We2,
             Other = wings_face:other(Face, array:get(Edge1, Etab)),
-            {{We3,Edge2},_} = connect_verts_1(V0,E2,Inside,Other,Dir2,We2),
+            {{We3,Edge2},Suggest} = connect_verts_1(V0,E2,Inside,Other,Dir2,We2),
             {EL, Vmap, We} = make_face_vs_0(FSs, V0, Edge2, array:set(NV,V0,Vmap0), We3),
             %% Dissolve edge here??
-            ?D("Del ~w => ~w~n",[Face,Other]),
-            {[Keep|EL], Other, Vmap, wings_edge:dissolve_edge(Remove,We)}
+            ?D("Del ~w => ~w In ~w ~w ~n",[Face,Other,Inside, Suggest]),
+            {[Keep|EL], Suggest, Vmap, wings_edge:dissolve_edge(Remove,We)}
     end.
 
 order_vertex_list(First, Last, FVs0) ->
