@@ -225,17 +225,16 @@ merge_2(done,
         #{we:=We2, el:=EL2, op:=Op2, temp_es:=TEs2},
         #we{id=Id1}, #we{id=Id2}) ->
     ?D("~p ~p ~p done~n",[?FUNCTION_NAME, We1#we.id, We2#we.id]),
-    DRes1 = dissolve_faces_in_edgeloops(lists:append(EL1), Op1, TEs1, We1),
-    DRes2 = dissolve_faces_in_edgeloops(lists:append(EL2), Op2, TEs2, We2),
-
     Weld = fun() ->
+                       DRes1 = dissolve_faces_in_edgeloops(lists:append(EL1), Op1, TEs1, We1),
+                       DRes2 = dissolve_faces_in_edgeloops(lists:append(EL2), Op2, TEs2, We2),
                    {We,Es} = weld(DRes1, DRes2),
                    [Del] = lists:delete(We#we.id, [Id1,Id2]),
                    ok = wings_we_util:validate(We),
                    #{sel_es=>Es, we=>We, delete=>Del}
            end,
-    %% ?DBG_TRY(Weld(), We1, We2).
-    ?DBG_TRY(Weld(), element(3, DRes1), element(3, DRes2)).
+    ?DBG_TRY(Weld(), We1, We2).
+    %% ?DBG_TRY(Weld(), element(3, DRes1), element(3, DRes2)).
     %% ?DBG_TRY(Weld(), get(we1), get(we2)).
     %% #{we=>We1, delete=>none, sel_es=>gb_sets:to_list(TEs1),
     %%   error=>We2, dummy=>{DRes1, DRes2, catch Weld()}}.
@@ -324,20 +323,27 @@ merge_wes(Wes, TEs0) ->
 invert_normals(sub, We) -> wings_we:invert_normals(We);
 invert_normals(_, We) -> We.
 
-partion_parts(ELs, Parts, We0) ->
-    ?D("Searching: ~n",[]),
+partion_parts(ELs, Parts, #we{fs=Fs}=We0) ->
+    ?D("Searching: in ~w~n",[We0#we.id]),
     [io:format(" ~w~n",[gb_sets:to_list(P)]) || P <- Parts],
-    partion_parts(ELs, Parts, We0, []).
+    partion_parts(ELs, Parts, gb_trees:keys(Fs), []).
 
-partion_parts([{_Es, Fs0}|ELs], Parts0, We, Inside) ->
-    Fs0 == [] andalso ?D("~w: ~w~n",[We#we.id, _Es]),
-    [InF|_] = Fs0,
-    %% ?D("Pick in:~w (~w)~n",[InF, Fs0]),
+partion_parts([{_Es, Fs0}|ELs], Parts0, Fs, Inside) ->
+    ordsets:intersection(ordsets:from_list(Fs0), Fs) == [] andalso ?D("~w~n~w",[_Es,Fs0]),
+    [InF|_] = Fs1 = ordsets:intersection(ordsets:from_list(Fs0), Fs),
+    ?D("Pick in:~w (~w)~n",[InF, Fs0]),
     case take(fun(Part) -> gb_sets:is_member(InF, Part) end, Parts0) of
-        not_found -> partion_parts(ELs, Parts0, We, Inside);
-        {Part, Parts} -> partion_parts(ELs, Parts, We, [Part|Inside])
+        not_found -> partion_parts(ELs, Parts0, Fs, Inside);
+        {Part, Parts} ->
+            case Fs1 -- gb_sets:to_list(Part) of  %% TEMP ASSERT DELETE ROW
+                [] -> ok;
+                _Left ->
+                    ?D("~w ~w~n",[InF, _Left]),
+                    error(bad)
+            end,
+            partion_parts(ELs, Parts, Fs, [Part|Inside])
     end;
-partion_parts([], Parts, _We, In) ->
+partion_parts([], Parts, _Fs, In) ->
     {In, Parts}.
 
 order_loops(Fs, ELs0, We) ->
@@ -486,8 +492,9 @@ check_if_used(Loop, Fs) ->
 
 make_verts_per_we(Loop, TEs0, Vmap0, We0) ->
     %%?D("We ~w Make verts:~n",[We0#we.id]),[io:format(" ~w~n", [E]) || E <- Loop],
+    Keep = keep_inside(Loop, Vmap0),
     {TEs, Vmap, We1} = cut_edges(Loop, TEs0, Vmap0, We0),
-    make_edge_loop(Loop, TEs, Vmap, [], [], We1).
+    make_edge_loop(Loop, TEs, Keep, Vmap, [], [], We1).
 
 cut_edges(SE, TEs0, Vmap, We0) ->
     WiEs = [{E,Vn} || #{op:=split_edge, e:=E, v:=Vn} <- SE],
@@ -535,27 +542,27 @@ temp_edge(Edge, New, Set) ->
         false -> Set
     end.
 
-make_edge_loop([#{op:=split_edge}=F|_]=Loop, TEs, Vmap0, EL0, IFs0, We0) ->
-    {EL, IFs, Vmap, We} = make_edge_loop_1(Loop, F, Vmap0, EL0, IFs0, We0),
+make_edge_loop([#{op:=split_edge}=F|_]=Loop, TEs, Keep, Vmap0, EL0, IFs0, We0) ->
+    {EL, IFs, Vmap, We} = make_edge_loop_1(Loop, F, Keep, Vmap0, EL0, IFs0, We0),
     {EL, IFs, TEs, Vmap, We};
-make_edge_loop(Loop, TEs, Vmap, EL, IFs, We) ->
+make_edge_loop(Loop, TEs, Keep, Vmap, EL, IFs, We) ->
     %% Start with split_edge
     case lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Loop) of
         {FSs, []} -> %% No edges intersect, make a face inside the intersecting face
-            inset_face(FSs, TEs, Vmap, We);
+            inset_face(FSs, TEs, Keep, Vmap, We);
         {FSs, Edges} -> %% Connect edges and create new verts
-            make_edge_loop(Edges++FSs, TEs, Vmap, EL, IFs, We)
+            make_edge_loop(Edges++FSs, TEs, Keep, Vmap, EL, IFs, We)
     end.
 
-make_edge_loop_1([V1], V1, Vmap, EL, IFs, We) ->
+make_edge_loop_1([V1], V1, _Keep, Vmap, EL, IFs, We) ->
     {EL, IFs, Vmap, We};
-make_edge_loop_1([#{op:=split_edge}=V1],#{op:=split_edge}=V2, Vmap, EL, IFs, We0) ->
-    {{We, New}, Face} = connect_verts(V1,V2,Vmap, We0),
+make_edge_loop_1([#{op:=split_edge}=V1],#{op:=split_edge}=V2, Keep, Vmap, EL, IFs, We0) ->
+    {{We, New}, Face} = connect_verts(V1,V2,Keep,Vmap,We0),
     {[New|EL], inside(Face,IFs), Vmap, We};
-make_edge_loop_1([#{op:=split_edge}=V1|[#{op:=split_edge}=V2|_]=Rest], Last, Vmap, EL, IFs, We0) ->
-    {{We, New}, Face} = connect_verts(V1,V2,Vmap, We0),
-    make_edge_loop_1(Rest, Last, Vmap, [New|EL], inside(Face,IFs), We);
-make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL0, IFs, We0) ->
+make_edge_loop_1([#{op:=split_edge}=V1|[#{op:=split_edge}=V2|_]=Rest], Last, Keep, Vmap, EL, IFs, We0) ->
+    {{We, New}, Face} = connect_verts(V1,V2,Keep,Vmap, We0),
+    make_edge_loop_1(Rest, Last, Keep, Vmap, [New|EL], inside(Face,IFs), We);
+make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Keep, Vmap, EL0, IFs, We0) ->
     {FSs, [V2|_]=Rest} =
         case lists:splitwith(fun(#{op:=Op}) -> Op =:= split_face end, Splits) of
             {FS, []} -> {FS, [Last]};
@@ -566,52 +573,61 @@ make_edge_loop_1([#{op:=split_edge}=V1|Splits], Last, Vmap, EL0, IFs, We0) ->
             %% ?D("Connect: ~w[~w] ~w[~w]~n",
             %%      [maps:get(v,V1), array:get(maps:get(v,V1),Vmap),
             %%       maps:get(v,V2), array:get(maps:get(v,V2), Vmap)]),
-            {{We1, Edge}, Face} = connect_verts(V1,V2,FSs,Vmap,We0),
+            {{We1, Edge}, Face} = connect_verts(V1,V2,Keep,FSs,Vmap,We0),
             ok = wings_we_util:validate(We1),
 %            ?D("~w: new edge ~w face ~w~n",[We0#we.id, Edge, Face]),
             {EL1,Vmap1,We} = make_face_vs(FSs, V1, Edge, Vmap, We1),
             %% ?D("New: ~w~n",[EL1]),
             %% ?D("Old: ~w~n",[EL0]),
-            make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, inside(Face,IFs), We);
+            make_edge_loop_1(Rest, Last, Keep, Vmap1, EL1++EL0, inside(Face,IFs), We);
         [{Edge,_F1,_F2}] ->
             %% ?D("Recreate: ~w: ~w ~w edge ~p in Fs ~w ~w~n",
             %%      [We0#we.id, array:get(maps:get(v,V1),Vmap),array:get(maps:get(v,V2), Vmap),Edge,_F1,_F2]),
-            {EL1,Face,Vmap1,We} = half_inset_face(V1,V2,FSs,Edge,Vmap,We0),
+            {EL1,Face,Vmap1,We} = half_inset_face(V1,V2,FSs,Edge,Keep,Vmap,We0),
 %            ?D("~w: new face ~w~n",[We0#we.id, Face]),
-            make_edge_loop_1(Rest, Last, Vmap1, EL1++EL0, inside(Face,IFs), We)
+            make_edge_loop_1(Rest, Last, Keep, Vmap1, EL1++EL0, inside(Face,IFs), We)
     end.
 
 inside(none, Fs) -> Fs;
-inside({delete, Face, Other}, Fs) -> false = lists:member(Face, Fs), [Other|Fs];
 inside(Face, Fs) when is_integer(Face) -> [Face|Fs].
 
 edge_exists(#{v:=V10},#{v:=V20},Vmap,We) ->
     wings_vertex:edge_through(array:get(V10,Vmap),array:get(V20,Vmap),We).
 
-connect_verts(V1, V2, Vmap, We) ->
+connect_verts(V1, V2, Keep, Vmap, We) ->
     {WeV1,WeV2,Face,OtherN} = pick_face(V1,V2, [], Vmap, We),
-    connect_verts_1(WeV1, WeV2, Face, OtherN, We).
-connect_verts(V1, V2, Refs, Vmap, We) ->
+    connect_verts_1(WeV1, WeV2, Keep, Face, OtherN, We).
+connect_verts(V1, V2, Keep, Refs, Vmap, We) ->
     {WeV1,WeV2,Face,OtherN} = pick_face(V1,V2, Refs, Vmap, We),
-    connect_verts_1(WeV1, WeV2, Face, OtherN, We).
+    connect_verts_1(WeV1, WeV2, Keep, Face, OtherN, We).
 
-connect_verts_1(WeV1, WeV2, Face, CrossDir, #we{vp=Vtab, es=Etab}=We) ->
+connect_verts_1(WeV1, WeV2, Keep, Face, CrossDir, #we{vp=Vtab, es=Etab}=We) ->
     %% ?D("~w: ~w ~w in ~w ~s~n",[We#we.id, WeV1, WeV2, Face, e3d_vec:format(CrossDir)]),
-    N = wings_face:normal(Face, We),
-    Dir = e3d_vec:cross(N,e3d_vec:norm_sub(array:get(WeV1,Vtab),array:get(WeV2,Vtab))),
-    %% ?D("Swap: ~.3f~n", [e3d_vec:dot(CrossDir, Dir)]),
-    Inside = 0 >= e3d_vec:dot(CrossDir, Dir),
+    V1 = array:get(WeV1,Vtab),
+    V2 = array:get(WeV2,Vtab),
     case wings_vertex:edge_through(WeV1,WeV2,Face,We) of
         none ->
+            N = wings_face:normal(Face, We),
+            Dir = e3d_vec:cross(N,e3d_vec:norm_sub(V1,V2)),
+            %% ?D("Swap: ~.3f (~s) ~n", [e3d_vec:dot(CrossDir, Dir), e3d_vec:format(Dir)]),
+            Inside = 0 >= e3d_vec:dot(CrossDir, Dir),
             case Inside of
                 true  -> {wings_vertex:force_connect(WeV1,WeV2,Face,We), Face};
                 false -> {wings_vertex:force_connect(WeV2,WeV1,Face,We), Face}
             end;
-        Edge when Inside ->
-            {{We, Edge}, Face};
         Edge ->
-            Other = wings_face:other(Face, array:get(Edge, Etab)),
-            {{We, Edge}, Other}
+            C = wings_face:center(Face, We),
+            Dir = e3d_vec:norm_sub(C,e3d_vec:average(V1,V2)),
+            Inside = 0 >= e3d_vec:dot(CrossDir, Dir),
+            case Inside andalso Keep of
+                true ->
+                    ?D("Add1 ~w: ~w ~w~n",[We#we.id, Keep, Face]),
+                    {{We, Edge}, Face};
+                false ->
+                    Other = wings_face:other(Face, array:get(Edge, Etab)),
+                    ?D("Add2 ~w: ~w ~w~n",[We#we.id, Keep, Other]),
+                    {{We, Edge}, Other}
+            end
     end.
 
 pick_face(#{v:=V1,o_n:=N1}, #{v:=V2,o_n:=N2}, [], Vmap, We) ->
@@ -649,7 +665,7 @@ pick_ref_face([#{f:=F}|Ss], F) ->
     pick_ref_face(Ss, F);
 pick_ref_face([], F) -> F.
 
-half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], RefEdge, Vmap0, We0) ->
+half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], RefEdge, Inside, Vmap0, We0) ->
     E1 = array:get(EV1, Vmap0),
     E2 = array:get(EV2, Vmap0),
     Wanted = pick_ref_face([R2|FSs], undefined),
@@ -658,7 +674,7 @@ half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], 
     FVs0 = wings_face:vertices_ccw(Face, We0),
     FVs = order_vertex_list(E1, E2, FVs0),
     [E1,_Skip,E3|_FVs] = FVs,
-    {{We1,Edge0},_} = connect_verts_1(E1,E3,Face,ON,We0),
+    {{We1,Edge0},_} = connect_verts_1(E1,E3,Inside,Face,ON,We0),
     Pos = vmap_pos(NV,Vmap0),
     {We2,Edge1} = wings_edge:fast_cut(Edge0,Pos,We1),
     V0 = Edge1,
@@ -668,7 +684,7 @@ half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], 
                     end,
     Dir2 = e3d_vec:norm(e3d_vec:average([N || #{o_n:=N} <- [R0,R1,R2|FSs]])),
     %% Make verts on the new edge
-    try connect_verts_1(V0,E2,Face,Dir2,We2) of
+    try connect_verts_1(V0,E2,Inside,Face,Dir2,We2) of
         {{We3,Edge2},_} ->
             {EL, Vmap, We} = make_face_vs_0(FSs, V0, Edge2, array:set(NV,V0,Vmap0), We3),
             %% Dissolve edge here??
@@ -676,11 +692,11 @@ half_inset_face(#{v:=EV1,o_n:=ON, fs:=CFs}=R0, #{v:=EV2}=R1, [#{v:=NV}=R2|FSs], 
     catch _:{badmatch,false} ->
             #we{es=Etab}=We2,
             Other = wings_face:other(Face, array:get(Edge1, Etab)),
-            {{We3,Edge2},_} = connect_verts_1(V0,E2,Other,Dir2,We2),
+            {{We3,Edge2},_} = connect_verts_1(V0,E2,Inside,Other,Dir2,We2),
             {EL, Vmap, We} = make_face_vs_0(FSs, V0, Edge2, array:set(NV,V0,Vmap0), We3),
             %% Dissolve edge here??
             ?D("Del ~w => ~w~n",[Face,Other]),
-            {[Keep|EL], {delete,Face,Other}, Vmap, wings_edge:dissolve_edge(Remove,We)}
+            {[Keep|EL], Other, Vmap, wings_edge:dissolve_edge(Remove,We)}
     end.
 
 order_vertex_list(First, Last, FVs0) ->
@@ -716,7 +732,7 @@ make_face_vs_1([#{op:=split_face,v:=V}|Ss], Edge, Vmap, EL, We0) ->
 make_face_vs_1([], _, Vmap, EL, We) ->
     {EL, Vmap, We}.
 
-inset_face(Loop0, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
+inset_face(Loop0, TEs0, KeepInside, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) ->
     Face = pick_ref_face(Loop0, undefined),
     NumberOfNew = length(Loop0),
     true = NumberOfNew > 2, %% Otherwise something is wrong
@@ -731,10 +747,10 @@ inset_face(Loop0, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) -
     Pos0 = [vmap_pos(V,Vmap0) || #{v:=V} <- Loop0],
     FaceN = wings_face:normal(Face, We0),
     LoopN = e3d_vec:normal(Pos0),
-    {Loop,Pos} = case e3d_vec:dot(FaceN,LoopN) > 0.0 of
-                     true -> {Loop0, Pos0};
-                     false -> {lists:reverse(Loop0), lists:reverse(Pos0)}
-                 end,
+    Pos = case e3d_vec:dot(FaceN,LoopN) > 0.0 of
+              true -> Pos0;
+              false -> lists:reverse(Pos0)
+          end,
 
     Edges = [{{lists:nth(V1, Pos),array:get(V2, Vpt0)},{V1+IdStart-1, V2}}
              || V1 <- lists:seq(1, NumberOfNew), V2 <- wings_face:vertices_ccw(Face, We0)],
@@ -760,7 +776,7 @@ inset_face(Loop0, TEs0, Vmap0,  #we{fs=Ftab0, es=Etab0, vc=Vct0, vp=Vpt0}=We0) -
     WeR = wings_facemat:assign(Mat, [F1, F1+1], We1#we{fs=Ftab,es=Etab,vc=Vct,vp=Vpt}),
     TEs = gb_sets:union(TEs0, gb_sets:from_ordset([E1,E1+1])),
     EL = wings_face:to_edges([Face], WeR),
-    case keep_inside(Loop, Pos) of
+    case KeepInside of
         true -> {EL, [Face], TEs, Vmap0, WeR};
         false -> {EL, [F1,F1+1], TEs, Vmap0, WeR}
     end.
@@ -888,7 +904,11 @@ update_inset_es1([{Id, Rec0}|Recs], [V2|_]=VC, Face, E1, F1, Etab0) ->
             array:set(Id, Rec0, Etab0)
     end.
 
-keep_inside(EL, PosList) ->
+keep_inside(EL, Vmap) ->
+    Pos = [vmap_pos(V,Vmap) || #{v:=V} <- EL],
+    keep_inside_1(EL, Pos).
+
+keep_inside_1(EL, PosList) ->
     Center = e3d_vec:average(PosList),
     VsPoint = e3d_kd3:from_list(lists:zip(EL,PosList)),
     %% The furtherest vertex should be convex,
